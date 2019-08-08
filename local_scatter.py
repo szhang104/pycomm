@@ -1,9 +1,7 @@
 import numpy as np
 from scipy.linalg import toeplitz
 from scipy.integrate import quad
-from matplotlib import pyplot as plt
 from numba import jit, njit, prange
-import time
 
 # TODO improve runspeed. very slow compared to MATLAB
 
@@ -15,16 +13,13 @@ def correlation_real(x, antenna_spacing, col):
 def correlation_imag(x, antenna_spacing, col):
     return np.sin(2 * np.pi * antenna_spacing * col * np.sin(x))
 
-
 @njit
 def gaussian_pdf(x, mean, dev):
     return np.exp(-(x-mean) ** 2 / (2 * dev ** 2)) / (np.sqrt(2 * np.pi) * dev)
 
-
 @njit
 def laplace_pdf(x, mean, scale):
     return np.exp(-np.abs(x-mean)/scale) / (2 * scale)
-
 
 @njit
 def uniform_pdf(x, a, b):
@@ -109,35 +104,3 @@ def R_local_scattering(M, theta, asd_deg,
         first_row[col] = complex(c_real, c_imag)
 
     return toeplitz(c=first_row.conjugate())
-
-
-def test_fixture():
-    starttime=time.time()
-    M = 100
-    theta = np.pi / 6
-    asd = 10
-    spacing=0.5
-    dists = ['Gaussian', 'Uniform', 'Laplace', 'Uncorrelated']
-    styles = ['k', 'b-.', 'r--', 'k:']
-    Rs = {}
-    eigs = {}
-    for dist, style in zip(dists, styles):
-        if dist == 'Uncorrelated':
-            Rs[dist] = np.eye(M)
-        else:
-            Rs[dist] = R_local_scattering(M, theta, asd, spacing, dist=dist)
-        eig = np.linalg.eig(Rs[dist])[0].real
-        eig = np.sort(eig)[::-1]
-        eig[eig < 0] = 1.0e-10
-        eigs[dist] = eig
-
-        plt.plot(np.arange(1, 101), 10*np.log10(eigs[dist]), style, label=dist)
-        plt.legend()
-        plt.ylim(bottom=-50,top=10)
-
-    # plt.show()
-    print('finished in {} secs'.format(time.time() - starttime))
-
-
-if __name__ == '__main__':
-    test_fixture()
