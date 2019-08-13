@@ -64,43 +64,51 @@ def R_local_scattering(M, theta, asd_deg,
     # correlation matrix is Toeplitz structure, so only need first row
     first_row = np.zeros([M,], dtype=dtype)
 
-    lb = None
-    ub = None
+    if accuracy == 1:
+        lb = None
+        ub = None
 
-    dist = dist.lower()
-    if dist == 'gaussian':
-        # dist_obj = norm(loc=theta, scale=asd)
-        lb = theta - 20 * asd
-        ub = theta + 20 * asd
-    elif dist == 'uniform':
-        # [-sqrt(3)*asd_deg, +sqrt(3)*asd_deg]
-        # dist_obj = uniform(loc=theta-np.sqrt(3)*asd,
-        #                    scale=2*np.sqrt(3)*asd)
-        lb = theta-np.sqrt(3)*asd
-        ub = theta+np.sqrt(3)*asd
-    elif dist == 'laplace':
-        # dist_obj = laplace(loc=theta, scale=asd/np.sqrt(2))
-        lb = theta - 20 * asd
-        ub = theta + 20 * asd
-    else:
-        raise NotImplementedError
+        dist = dist.lower()
+        if dist == 'gaussian':
+            # dist_obj = norm(loc=theta, scale=asd)
+            lb = theta - 20 * asd
+            ub = theta + 20 * asd
+        elif dist == 'uniform':
+            # [-sqrt(3)*asd_deg, +sqrt(3)*asd_deg]
+            # dist_obj = uniform(loc=theta-np.sqrt(3)*asd,
+            #                    scale=2*np.sqrt(3)*asd)
+            lb = theta-np.sqrt(3)*asd
+            ub = theta+np.sqrt(3)*asd
+        elif dist == 'laplace':
+            # dist_obj = laplace(loc=theta, scale=asd/np.sqrt(2))
+            lb = theta - 20 * asd
+            ub = theta + 20 * asd
+        else:
+            raise NotImplementedError
 
 
 
-    for col in range(0, M):
-        # distance from the first antenna
-        c_real:float = quad(
-            func=corr,
-            a=lb,
-            b=ub,
-            args=(theta, asd, antenna_spacing, dist, col, 0)
-        )[0]
-        c_imag:float = quad(
-            func=corr,
-            a=lb,
-            b=ub,
-            args=(theta, asd, antenna_spacing, dist, col, 1))[0]
+        for col in range(0, M):
+            # distance from the first antenna
+            c_real:float = quad(
+                func=corr,
+                a=lb,
+                b=ub,
+                args=(theta, asd, antenna_spacing, dist, col, 0)
+            )[0]
+            c_imag:float = quad(
+                func=corr,
+                a=lb,
+                b=ub,
+                args=(theta, asd, antenna_spacing, dist, col, 1))[0]
 
-        first_row[col] = complex(c_real, c_imag)
+            first_row[col] = complex(c_real, c_imag)
+    elif accuracy == 2:
+        # Gaussian distribution
+        distance = np.arange(M)
+        x1 = np.exp(
+            1j * 2 * np.pi * antenna_spacing * np.sin(theta) * distance)
+        x2 = np.exp(-asd ** 2 / 2 * (2 * np.pi * antenna_spacing * np.cos(theta) * distance) ** 2)
+        first_row = x1 * x2
 
     return toeplitz(c=first_row.conjugate())

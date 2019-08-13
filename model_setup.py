@@ -1,9 +1,9 @@
 import numpy as np
 from local_scatter import R_local_scattering
-
+from utils import randn2
 
 def channel_stat_setup(
-        L, K, M, accuracy, asd_deg
+        L, K, M, asd_degs, accuracy=2,
 ):
     """
     channel statistics between UE's at random locations and the BS.
@@ -68,7 +68,7 @@ def channel_stat_setup(
     perBS = np.zeros([L,], dtype=np.int)
 
     # normalized spatial correlation matrices
-    R = np.zeros([M, M, K, L, L, len(asd_deg)])
+    R = np.zeros([M, M, K, L, L, len(asd_degs)], dtype=np.complex128)
 
     channel_gain = np.zeros([K, L, L])
 
@@ -79,57 +79,56 @@ def channel_stat_setup(
         while perBS[i] < K:
             UEremaining = K - perBS[i]
             pos = np.random.uniform(-inter_bs_distance/2, inter_bs_distance/2,
-                              size=[UEremaining, 2])
+                              size=[2, UEremaining]).transpose()
             cond = np.linalg.norm(pos, ord=2, axis=1) >= min_UE_BS_dist
             pos = pos[cond, :] # satisfying min distance w.r.t BS shape (?, 2)
             for x in pos:
                 res.append(x + BS_positions[i])
             perBS[i] += pos.shape[0]
+        UEpositions[:, i, :] = np.array(res)
 
         # loop through all BS for cross-channels
         for j in range(L):
-            # distance from UE in cell i to BS j, with wrap-around. The
-            # shortest distance is considered
-            tt = np.linalg.norm(np.expand_dims(UEpositions[:, i, :], axis=1) - BS_positions_wrapped[j, :, :], axis=2)
-
-            # [distancesBSj,whichpos] = min(abs( repmat(UEpositions(:,l),[1 size(BSpositionsWrapped,2)]) - repmat(BSpositionsWrapped(j,:),[K 1]) ),[],2);
+            # distance between all UEs in cell i to BS j, considering wrap-around.
+            # The shortest of the 9 position is returned
+            dist_ue_i_j = np.linalg.norm(np.expand_dims(UEpositions[:, i], axis=1) - BS_positions_wrapped[j, :, :], axis=2)
+            dist_bs_j = np.min(dist_ue_i_j, axis=1)
+            which_pos = np.argmin(dist_ue_i_j, axis=1)
 
             # avg. channel gain w/ large-scale fading model in (2.3),
             # neglecting shadow fading
 
             channel_gain[:, i, j] = constant_term - alpha * 10 * np.log10(
-                distances_BS_j)
+                dist_bs_j)
 
             # nominal angle b/w UE k in cell l and BS j
             # generate spatial correlation matrices for channels with local
             # scattering model
 
             for k in range(K):
-                angle_BS_j = np.arctan(UEpositions - BSpositions_wrap[j,
-                                                                      whichpos(k)])
-                for spr in range(len(asd_deg)):
+                vec_ue_bs = UEpositions[k, i] - BS_positions_wrapped[j, which_pos[k]]
+                angle_BS_j = np.arctan2(vec_ue_bs[1], vec_ue_bs[0])
+                for spr, asd_deg in enumerate(asd_degs):
                     R[:, :, k, i, j, spr] = R_local_scattering(
                         M,
                         angle_BS_j,
-                        asd_deg(spr),
+                        asd_deg,
                         antenna_spacing,
-                        accuracy
+                        accuracy=accuracy
                     )
-        #
-        # # all UEs in cell i to generate shadow fading realizations
-        # for k in range(K):
-        #
-        #
-        #     # see if another BS has a larger avg. channel gain to the UE than
-        #     # BS i
-        #     while True:
-        #         # generate new shadow fading realizations until all UE's in
-        #         # cell i has its largest avg. channel gain from BS i
-        #         shadowing = sigma_sf * np.random.randn(1, 1, L)
-        #         channel_gain_shadowing = channel_gain[k, i, :] + shadowing
-        #         if channel_gain_shadowing[i] >= max(channel_gain_shadowing):
-        #             break
-        #     channel_gain[k,i,:] = channel_gain_shadowing
+
+        # all UEs in cell i to generate shadow fading realizations
+        for k in range(K):
+            # see if another BS has a larger avg. channel gain to the UE than
+            # BS i
+            while True:
+                # generate new shadow fading realizations until all UE's in
+                # cell i has its largest avg. channel gain from BS i
+                shadowing = sigma_sf * randn2(L)
+                channel_gain_shadowing = channel_gain[k, i] + shadowing
+                if channel_gain_shadowing[i] >= np.max(channel_gain_shadowing):
+                    break
+            channel_gain[k,i,:] = channel_gain_shadowing
 
     return R, channel_gain
 
