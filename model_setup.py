@@ -27,7 +27,7 @@ def channel_stat_setup(
     R(:,:,k,j,l)*10^(channelGaindB(k,j,l)/10) is the full
     spatial channel correlation matrix.
     """
-    side_length = 1000  # square side, in meters
+    side_length = 1000.0  # square side, in meters
     alpha = 3.76  # pathloss exp
 
     constant_term = -35.3  # avg. channel gain in dB at the ref. distance 1
@@ -44,9 +44,28 @@ def channel_stat_setup(
     inter_bs_distance = side_length / np.sqrt(L)
 
     # scatter the BSs
+    BS_positions = np.stack(
+        np.meshgrid(
+            np.arange(inter_bs_distance/2, side_length, inter_bs_distance),
+            np.arange(inter_bs_distance/2, side_length, inter_bs_distance),
+            indexing='ij'
+        ),
+        axis=2).reshape([-1,2])
+    # now all the other nine alternatives of the BS locations
+    wrap_locations = np.stack(
+        np.meshgrid(
+            np.array([-side_length, 0, side_length]),
+            np.array([-side_length, 0, side_length]),
+            indexing='ij'
+        ),
+        axis=2).reshape([-1,2])
+    # for each BS locations, there are 9 possible alternative locations including
+    # the original one. Here uses broadcasting to add (9,2) to a (num_BS, 1, 2) to
+    # get a (num_BS, 9, 2)
+    BS_positions_wrapped = np.expand_dims(BS_positions, axis=1) + wrap_locations
 
     UEpositions = np.zeros([K, L, 2])
-    perBS = np.zeros([L,])
+    perBS = np.zeros([L,], dtype=np.int)
 
     # normalized spatial correlation matrices
     R = np.zeros([M, M, K, L, L, len(asd_deg)])
@@ -62,17 +81,18 @@ def channel_stat_setup(
             pos = np.random.uniform(-inter_bs_distance/2, inter_bs_distance/2,
                               size=[UEremaining, 2])
             cond = np.linalg.norm(pos, ord=2, axis=1) >= min_UE_BS_dist
-            pos = pos[cond] # satisfying min distance w.r.t BS shape (?, 2)
-            res.append(pos)
+            pos = pos[cond, :] # satisfying min distance w.r.t BS shape (?, 2)
+            for x in pos:
+                res.append(x + BS_positions[i])
             perBS[i] += pos.shape[0]
 
         # loop through all BS for cross-channels
         for j in range(L):
             # distance from UE in cell i to BS j, with wrap-around. The
             # shortest distance is considered
-            """
-            [distancesBSj,whichpos] = min(abs( repmat(UEpositions(:,l),[1 size(BSpositionsWrapped,2)]) - repmat(BSpositionsWrapped(j,:),[K 1]) ),[],2);
-            """
+            tt = np.linalg.norm(np.expand_dims(UEpositions[:, i, :], axis=1) - BS_positions_wrapped[j, :, :], axis=2)
+
+            # [distancesBSj,whichpos] = min(abs( repmat(UEpositions(:,l),[1 size(BSpositionsWrapped,2)]) - repmat(BSpositionsWrapped(j,:),[K 1]) ),[],2);
 
             # avg. channel gain w/ large-scale fading model in (2.3),
             # neglecting shadow fading
@@ -95,21 +115,21 @@ def channel_stat_setup(
                         antenna_spacing,
                         accuracy
                     )
-
-        # all UEs in cell i to generate shadow fading realizations
-        for k in range(K):
-
-
-            # see if another BS has a larger avg. channel gain to the UE than
-            # BS i
-            while True:
-                # generate new shadow fading realizations until all UE's in
-                # cell i has its largest avg. channel gain from BS i
-                shadowing = sigma_sf * np.random.randn(1, 1, L)
-                channel_gain_shadowing = channel_gain[k, i, :] + shadowing
-                if channel_gain_shadowing[i] >= max(channel_gain_shadowing):
-                    break
-            channel_gain[k,i,:] = channel_gain_shadowing
+        #
+        # # all UEs in cell i to generate shadow fading realizations
+        # for k in range(K):
+        #
+        #
+        #     # see if another BS has a larger avg. channel gain to the UE than
+        #     # BS i
+        #     while True:
+        #         # generate new shadow fading realizations until all UE's in
+        #         # cell i has its largest avg. channel gain from BS i
+        #         shadowing = sigma_sf * np.random.randn(1, 1, L)
+        #         channel_gain_shadowing = channel_gain[k, i, :] + shadowing
+        #         if channel_gain_shadowing[i] >= max(channel_gain_shadowing):
+        #             break
+        #     channel_gain[k,i,:] = channel_gain_shadowing
 
     return R, channel_gain
 
