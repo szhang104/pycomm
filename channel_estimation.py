@@ -36,30 +36,38 @@ def channel_estimates(R, channel_gain_db, realization_cnt, M, K, L, p, f):
     C: (M, M, K, L, L)
         estimation error correlation
     """
-
+    np.random.seed(12345)
     # Generate uncorrelated Rayleigh fading channel realizations
     H = randn2(M, realization_cnt, K, L, L) + 1j * randn2(M, realization_cnt, K, L, L)
 
     # Prepare a matrix to save the channel gains per UE
     betas = np.zeros((K,L,L))
+    R_gain = np.zeros(R.shape, dtype=np.complex)
 
     # Go through all channels and apply the channel gains to the spatial
     # correlation matrices
+    # matlab impl:
     for j in range(L):
         for l in range(L):
             for k in range(K):
                 if channel_gain_db[k, j, l] > -np.inf:
                     # Extract channel gain in linear scale
                     betas[k,j,l] = 10 ** (channel_gain_db[k, j, l] / 10)
-                    # Apply channel gain to correlation matrix
-                    R[:, :, k, j, l] = betas[k, j, l] * R[:, :, k, j, l]
+
+                    R_gain[:, :, k, j, l] = betas[k, j, l] * R[:, :, k, j, l]
                     # Apply correlation to the uncorrelated channel realizations
-                    Rsqrt = sp.linalg.sqrtm(R[:, :, k, j, l])
+                    Rsqrt = sp.linalg.sqrtm(R_gain[:, :, k, j, l])
                     H[:, :, k, j, l] = np.sqrt(0.5) * Rsqrt @ H[:, :, k, j, l]
                 else:
                     betas[k,j,l] = 0
-                    R[:, :, k, j, l] = 0
+                    R_gain[:, :, k, j, l] = 0
                     H[:, :, k, j, l] = 0
+
+    # betas = np.power(10, channel_gain_db / 10.0)
+    # R_gain = betas * R # Apply channel gain to correlation matrix
+    # Rsqrt = sp.linalg.sqrtm()
+
+
 
     # do the channel estimation
     tau_p = f * K
@@ -67,7 +75,7 @@ def channel_estimates(R, channel_gain_db, realization_cnt, M, K, L, p, f):
     if f == 1:
         pilot_pattern = np.zeros((L,))
     elif f == 2:
-        pilot_pattern = np.kron(np.ones((2,)), np.array([1,2,1,2,2,1,2,1]))
+        pilot_pattern = np.kron(np.ones((2,)), np.array([0,1,0,1,1,0,1,0]))
     elif f == 4:
         pilot_pattern = np.kron(np.ones((2,)), np.array([0,1,0,1,2,3,2,3]))
     elif f == 16:
@@ -91,11 +99,11 @@ def channel_estimates(R, channel_gain_db, realization_cnt, M, K, L, p, f):
             yp = np.sqrt(p) * tau_p * np.sum(H[:, :, :, group_members, j], axis=3) \
                 + np.sqrt(tau_p) * Np[:, :, :, j, g]
             for k in range(K):
-                PsiInv = p * tau_p * np.sum(R[:, :, k, group_members, j], axis=2) + np.eye(M)
+                PsiInv = p * tau_p * np.sum(R_gain[:, :, k, group_members, j], axis=2) + np.eye(M)
                 for l in group_members:
-                    RPsi = np.linalg.solve(PsiInv.conjugate().transpose(), R[:, :, k, l, j]).conjugate().transpose()
+                    RPsi = np.linalg.solve(PsiInv.conjugate().transpose(), R_gain[:, :, k, l, j]).conjugate().transpose()
                     Hhat_MMSE[:, :, k, l, j] = np.sqrt(p) * RPsi @ yp[:, :, k]
-                    C_MMSE[:, :, k, l, j] = R[:, :, k, l, j] - p * tau_p * RPsi @ R[:, :, k, l, j]
-    return Hhat_MMSE, C_MMSE, tau_p, R
+                    C_MMSE[:, :, k, l, j] = R_gain[:, :, k, l, j] - p * tau_p * RPsi @ R_gain[:, :, k, l, j]
+    return Hhat_MMSE, C_MMSE, tau_p, R_gain
 
 
