@@ -61,9 +61,6 @@ def mmmse_combining(H: ndarray, ue, p, C):
     return np.linalg.solve(A, B)
 
 
-
-
-
 def SE_UL(Hhat:ndarray, C:ndarray, R, tau_c, tau_p, realization_cnt, M, K, L, p):
     """
     calculates the uplink spectral efficiency for different receive combining
