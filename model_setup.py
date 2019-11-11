@@ -24,7 +24,7 @@ def channel_stat_setup(
     R[:, :, k, j, l] is the correlation matrix for channel b/w UE k in cell j 
     and the BS in cell l. Normalized such that trace(R) = M
     channelGaindB (K, L, L) average channel gain in dBs of all channels.
-    R(:,:,k,j,l)*10^(channelGaindB(k,j,l)/10) is the full
+    R(:,:,k,j,l)*10**(channelGaindB(k,j,l)/10) is the full
     spatial channel correlation matrix.
     """
     side_length = 1000.0  # square side, in meters
