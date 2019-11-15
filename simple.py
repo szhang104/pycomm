@@ -13,12 +13,27 @@ CONFIG = {
     "kappa": 2, # path loss exponent
 }
 
+def hermitian(X):
+    return X.conj().swapaxes(-1, -2)
 
 def solve_left(A, B, a_is_hermitian=False):
+    """
+    Solve X A = B.
+    transformed to equivalent problem A^H X^H = B^H
+    Parameters
+    ----------
+    A
+    B
+    a_is_hermitian
+
+    Returns
+    -------
+
+    """
     if a_is_hermitian:
-        return np.linalg.solve(A, B.conj().T).conj().T
+        return hermitian(np.linalg.solve(A, hermitian(B)))
     else:
-        return np.linalg.solve(A.conj().T, B.conj().T).conj().T
+        return hermitian(np.linalg.solve(hermitian(A), hermitian(B)))
 
 
 def zf_combining(H):
@@ -32,7 +47,7 @@ def zf_combining(H):
 
     """
     H1 = H
-    A = H1.conj().transpose() @ H1 + 1e-12 * np.eye(H1.shape[1])
+    A = hermitian(H1) @ H1 + 1e-12 * np.eye(H1.shape[1])
     B = H1
     res = solve_left(A, B, a_is_hermitian=True)
     return res
@@ -109,8 +124,9 @@ def DL_SE(channel, precoding, loop=True):
     H, W = channel, precoding
     no_real, L, K, M = H.shape[0], H.shape[
         1], H[3], H[4]
-    intercell_intf = np.zeros(L, K)
-    intracell_intf = np.zeros(no_real, L, K)
+    intercell_intf = np.zeros((L, K), dtype=np.complex)
+    intracell_intf = np.zeros((no_real, L, K), dtype=np.complex)
+    sig = np.zeros((no_real, L, K), dtype=np.complex)
     if loop:
         for n in range(no_real):
             for l in range(L):
@@ -126,8 +142,23 @@ def DL_SE(channel, precoding, loop=True):
                     intercell_intf[l] -= (np.abs(intracell_intf)) ** 2
                     intracell_intf = (np.abs(intracell_intf)) ** 2
                     intracell_intf[n, l, k] -= sig[n, l, k]
+    else:
+        pass
 
 
+    return
+
+
+def get_precoding(H, method="ZF", local_cell_info=True):
+    if method == "ZF":
+        algo = zf_combining
+    if local_cell_info:
+        no_cells = H.shape[1]
+        for j in range(no_cells):
+            W = algo(H[:,j,j])
+
+
+    if method == "ZF":
 
 
 
@@ -151,5 +182,7 @@ def decision(H):
 
 if __name__ == "__main__":
     H = get_channel_local_scatter(no_realization=1000)
+    W = zf_combining(H)
+    DL_SE(H, W)
 
 
