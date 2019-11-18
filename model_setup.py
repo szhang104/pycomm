@@ -3,7 +3,7 @@ from local_scatter import R_local_scattering
 from utils import randn2
 
 def channel_stat_setup(
-        L, K, M, asd_degs, accuracy=2,
+        L, K, M, asd_degs, no_BS_per_dim=None, accuracy=2,
 ):
     """
     channel statistics between UE's at random locations and the BS.
@@ -19,6 +19,8 @@ def channel_stat_setup(
     2 - small-angle approximation
     :param asd_deg: angular standard deviation around the nominal angle, 
     in degrees
+    :param no_BS_per_dim: array of number of BS' per dimension. If None, use
+    (sqrt(L), sqrt(L))
     :return: R: 5-d array of shape (M, M, K, L, L) with special correlation 
     matrices for all UEs.
     R[:, :, k, j, l] is the correlation matrix for channel b/w UE k in cell j 
@@ -40,14 +42,17 @@ def channel_stat_setup(
 
     # antenna spacing # of wavelengths
     antenna_spacing = 0.5
-
-    inter_bs_distance = side_length / np.sqrt(L)
+    if no_BS_per_dim is None:
+        no_BS_per_dim = np.array([np.sqrt(L), np.sqrt(L)])
+    inter_bs_distance = side_length / no_BS_per_dim
 
     # scatter the BSs
     BS_positions = np.stack(
         np.meshgrid(
-            np.arange(inter_bs_distance/2, side_length, inter_bs_distance),
-            np.arange(inter_bs_distance/2, side_length, inter_bs_distance),
+            np.arange(inter_bs_distance[0]/2, side_length, inter_bs_distance[
+                0]),
+            np.arange(inter_bs_distance[1]/2, side_length, inter_bs_distance[
+                1]),
             indexing='ij'
         ),
         axis=2).reshape([-1,2])
@@ -79,7 +84,7 @@ def channel_stat_setup(
         while perBS[i] < K:
             UEremaining = K - perBS[i]
             pos = np.random.uniform(-inter_bs_distance/2, inter_bs_distance/2,
-                              size=[2, UEremaining]).transpose()
+                              size=(UEremaining, 2))
             cond = np.linalg.norm(pos, ord=2, axis=1) >= min_UE_BS_dist
             pos = pos[cond, :] # satisfying min distance w.r.t BS shape (?, 2)
             for x in pos:
