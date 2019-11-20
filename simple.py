@@ -3,8 +3,9 @@ from numpy import ndarray
 import scipy as sp
 # https://github.com/emilbjornson/optimal-beamforming/blob/master/simulationFigure3.m
 from model_setup import channel_stat_setup
-from numba import jit, njit, prange
-from timeit import default_timer as timer
+from utils import hermitian, mldivide
+
+
 CONFIG = {
     "cell": 4,
     "antenna_per_BS": 100, # no of BS antennas
@@ -13,34 +14,10 @@ CONFIG = {
     "kappa": 2, # path loss exponent
     "p_t_dl": 100, # downlink transmit power in mW
     "noise_figure": 7,
-
 }
 
 def noise_dbm():
     return -174 + 10 * np.log10(CONFIG["bandwidth"]) + CONFIG["noise_figure"]
-
-
-def hermitian(X):
-    return X.conj().swapaxes(-1, -2)
-
-def solve_left(A, B, a_is_hermitian=False):
-    """
-    Solve X A = B.
-    transformed to equivalent problem A^H X^H = B^H
-    Parameters
-    ----------
-    A
-    B
-    a_is_hermitian
-
-    Returns
-    -------
-
-    """
-    if a_is_hermitian:
-        return hermitian(np.linalg.solve(A, hermitian(B)))
-    else:
-        return hermitian(np.linalg.solve(hermitian(A), hermitian(B)))
 
 
 def zf_combining(H):
@@ -51,12 +28,11 @@ def zf_combining(H):
     H: CSI of a single cell. no_real x no_user_per_cell x no_antenna
     Returns
     -------
-
     """
     H1 = H
     A = hermitian(H1) @ H1 + 1e-12 * np.eye(H1.shape[-1])
     B = H1
-    res = solve_left(A, B, a_is_hermitian=True)
+    res = mldivide(A, B, A_is_hermitian=True)
     return res
 
 
@@ -187,7 +163,7 @@ def DL_SE(channel, precoding, power=100, loop=True):
         sinr = (power * sig / int_noise)
         dl_se = np.log2(1+sinr).mean(axis=0)
 
-    return dl_se
+    return dl_se, sig, intracell_intf, intercell_intf
 
 
 def get_precoding(H, method="ZF", local_cell_info=True):

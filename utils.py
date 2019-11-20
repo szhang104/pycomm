@@ -2,6 +2,9 @@ import numpy as np
 from numpy import ndarray
 from scipy.special import erfinv
 
+def hermitian(X):
+    return X.conj().swapaxes(-1, -2)
+
 def randn2(*args,**kwargs):
     '''
     Calls rand and applies inverse transform sampling to the output.
@@ -22,9 +25,11 @@ def running_avg(i, old, new):
     return (old * i + new) / (i + 1.0)
 
 
-def mldivide(A: ndarray, B: ndarray):
-    res: ndarray = np.linalg.solve(A.transpose().conj(), B.transpose().conj())
-    return res.transpose().conj()
+def mldivide(A: ndarray, B: ndarray, A_is_hermitian=False):
+    if A_is_hermitian:
+        return hermitian(np.linalg.solve(A, hermitian(B)))
+    else:
+        return hermitian(np.linalg.solve(hermitian(A), hermitian(B)))
 
 
 def rayleigh_channel(t_cnt, r_cnt, t_antenna, r_antenna_cnt, squeeze=True, realization_cnt=1, gaussian_rng=None):
