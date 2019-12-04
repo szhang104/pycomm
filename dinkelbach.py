@@ -1,113 +1,104 @@
 import numpy as np
 import pyomo
-from pyomo.environ import *
-
-
-
-def dinkelbach(P, Q, sub_solve, x_init=None, tol=1e-4, debug=False):
-    """
-    Maximize P(x) / Q(x)
-    s.t. x in S
-
-    Assumptions:
-    -- Q(x) > 0 in the feasible set of x
-
-
-    Parameters
-    ----------
-    P
-    Q
-    tol
-
-    Returns
-    -------
-
-    """
-    status = "Uninitialized"
-    def get_sub_obj(q):
-        return lambda x: P(x) - q * Q(x)
-
-    def obj(x):
-        return P(x) / Q(x)
-
-    if not x_init:
-        raise RuntimeError("x_init not supplied.")
-
-    x = x_init
-    q = obj(x)
-
-
-    while True:
-        # form the new instance of subproblem
-        subobj = get_sub_obj(q)
-        status, obj_val, x = sub_solve(q)
-        if status == "Normal":
-            q_new = obj(x_opt)
-            if debug:
-                print("new ratio: {q_new}")
-            if q_new < tol:
-                # DONE, this is the optimum
-                if debug:
-                    print("Stop iteration because q_new < tol: {tol}")
-                status = "Optimum"
-                break
-            else:
-                # otherwise keep the iteration
-                q = q_new
-                pass
-        else:
-            status = "Error"
-            print("Stopped because of sub solver error.")
-
-    return status, x
-
-
-
+import pyomo.environ as pe
 
 def example_linear_frac(tol=1e-3, debug=True):
-    model = AbstractModel()
-    model.q = Param(initialize=0.5)
-    goods = Set(initialize=[0, 1])
-    model.u_cost = Set(goods, initialize=[1, 2])
-    model.u_profit = Param(goods, initialize=[4, 2])
-    model.u_material = Set(goods, initialize=[1, 3])
-    model.material_avail = Param(initialize=30.0)
-    model.x = Var(goods, domain=NonNegativeReals)
+    model = pe.AbstractModel()
+    model.q = pe.Param(default=0.5, mutable=True)
+    model.goods = pe.Set(initialize=[0, 1])
+    model.u_cost = pe.Param(model.goods, default=[1.0, 2.0])
+    model.u_profit = pe.Param(model.goods, default=[4.0, 2.0])
+    model.u_material = pe.Param(model.goods, default=[1.0, 3.0])
+    model.material_avail = pe.Param(default=30.0)
+    model.x = pe.Var(model.goods, domain=pe.NonNegativeReals)
 
     def cost(model):
-        return sum_product(model.u_cost, model.x) + 5
+        return pe.sum_product(model.u_cost, model.x) + 5
+
     def profit(model):
-        profit = sum_product(model.x, model.u_profit) + 10
+        return pe.sum_product(model.u_profit, model.x) + 10
 
     def cons_prod(model):
         return model.x[0] + 5 >= 2 * model.x[1]
 
     def cons_material(model):
-        return sum_product(model.u_material,
-                           model.x) <=model.material_avail
+        return pe.sum_product(model.u_material, model.x) \
+               <= model.material_avail
+
     def getobj(model):
         return profit(model) - model.q * cost(model)
 
-    model.cons_prod = Constraint(rule=cons_prod)
-    model.cons_material = Constraint(rule=cons_material)
-    model.OBJ = Objective(rule=getobj)
+    # `rule` takes as the argument a function which returns a pyomo expression.
+    # Doing this delays the expression building until the `AbstractModel` is
+    # instantiated because operations like `sum_product` requires the arguments
+    # to have concrete values.
+
+    model.cons_prod = pe.Constraint(rule=cons_prod)
+    model.cons_material = pe.Constraint(rule=cons_material)
+    model.obj = pe.Objective(rule=getobj, sense=pe.maximize)
 
     def subsolve(q):
         model.q = q
         inst = model.create_instance()
-        SolverFactory("glpk").solve(inst)
+        pe.SolverFactory("glpk").solve(inst)
         return inst
 
-    q = 0.5
+    q = 0.01
     while True:
         inst = subsolve(q)
-        q = inst.ratio
-        if q < tol:
+        q = pe.value(profit(inst) / cost(inst))
+        val = pe.value(inst.obj)
+        if debug:
+            print(q, val)
+            print([pe.value(inst.x[g]) for g in inst.goods])
+        if val < tol:
             if debug:
                 print("Stop iteration because q_new < tol: {tol}")
             break
         else:
             pass
+
+
+
+def max_sum_rate_opt(H):
+    """
+    Single-cell sum rate maximization, as an example to show that the
+    analytical expression
+    w_mmse_k =              + ∑_{i≠k} q_i h_i h_i^H)^{-1} h_k
+                \sqrt{p_k} ---------------------------------------
+                          ||(I + ∑_{i≠k} q_i h_i h_i^H)^{-1} h_k||
+    H:
+    complex CSI, shape is (K, M)
+
+
+    Returns
+    -------
+
+    """
+    model = pe.ConcreteModel()
+    K, M = H.shape[0], H.shape[1]
+    users = pe.RangeSet(K)
+    antennas = pe.RangeSet(M)
+    complex = pe.RangeSet(2)
+    model.w = pe.Var(users, antennas, complex, domain=pe.Reals) # (K, M,
+    # 2) real-value
+
+    def comp_norm(x, y):
+        return x * x + y * y
+
+    def cons_norm(model, u):
+        norm_u = pe.quicksum(comp_norm(model.w[u][a][0], model.w[u][a][1]) for
+                           a in
+                 antennas)
+        return norm_u <= 1
+
+
+    model.cons_norm = pe.Constraint(users, rule=cons_norm)
+
+
+
+
+
 
 
 
