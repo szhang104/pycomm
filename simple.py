@@ -4,17 +4,11 @@ import scipy as sp
 # https://github.com/emilbjornson/optimal-beamforming/blob/master/simulationFigure3.m
 from model_setup import channel_stat_setup
 from utils import hermitian, mldivide
+import jax
+import ctypes
+mkl = ctypes.cdll.LoadLibrary("libmkl_rt.so")
 
 
-CONFIG = {
-    "cell": 4,
-    "antenna_per_BS": 100, # no of BS antennas
-    "user_per_cell": 50, # no of single-antenna user
-    "bandwidth": 20e6,
-    "kappa": 2, # path loss exponent
-    "p_t_dl": 100, # downlink transmit power in mW
-    "noise_figure": 7,
-}
 
 def noise_dbm():
     return -174 + 10 * np.log10(CONFIG["bandwidth"]) + CONFIG["noise_figure"]
@@ -76,6 +70,10 @@ def get_channel_local_scatter(no_realization=10):
     H_gain = np.zeros_like(H)
     for _idx in np.ndindex(*H.shape[0:3]):
         H_gain[_idx] = sp.linalg.sqrtm(R_gain[_idx]) @ H[_idx]
+        # TODO: use Cholesky factorization to replace the slow matrix square
+        # root operation.  However, it requires the matrix to be positive
+        # semidefinite, which should be the case but due to the numerical error
+        # is not always the case.
     res = np.ascontiguousarray(np.transpose(H_gain, (4, 0, 1, 2, 3)))
     return res
 
@@ -206,12 +204,134 @@ def decision(H):
     return
 
 
+def SE(H, W):
+    """
+    A simplified implementation of spectral efficiency
+    Parameters
+    ----------
+    H:
+        the channel state, power is normalized w.r.t to noise power.
+         (no_real, N, N, K, M)
+    W:
+        the precoding unnormalized, (no_ral, N, N, K, M)
+
+    Returns
+    -------
+    the spectral efficiency per user. Normalized w.r.t to the bandwidth
+        (no_real, N, K)
+    """
+
+    no_real, N, N, K, M = H.shape
+    all_powers = np.swapaxes(np.swapaxes(H, 0, 1) @ hermitian(W), 0, 1)
+    all_powers = np.abs(all_powers) ** 2
 
 
+
+    # (no_real, N, N, K, K)
+    # (no_real, n_t, n, k, k_neighbor)
+    # the power coming from BS n_t to User k in BS n, using the
+    # precoding of BS n_t to user k_neighbor in BS n1
+
+
+    p_sig = np.zeros((no_real, N, K))
+    p_int = np.zeros((no_real, N, K, N))
+    sinr = np.zeros_like(p_sig)
+
+
+    for r in range(no_real):
+        for n in range(N):
+            for k in range(K):
+                p_sig[r, n, k] = all_powers[r, n, n, k, k]
+                for n_t in range(N):
+                    p_int[r, n, k, n_t] = all_powers[r, n_t, n, k].sum()
+                    if n_t == n:
+                        p_int[r, n, k, n_t] -= p_sig[r,n,k]
+    sinr = p_sig / ((p_int).sum(axis=-1) + 1)
+    return np.log2(1 + sinr), p_sig, p_int
+
+
+
+
+
+def get_BS_power(precode, antenna_sel):
+    """
+    Calculate the BS power based on two parts:
+    1. transmission activity, E(ww^H)
+    2. each antenna costs a fixed amount of power for circuits/power amps
+
+    Parameters
+    ----------
+    precode:
+        precoding vectors, (_, N, N, K, M)
+    antenna_sel
+        antenna selection, zero-one (_, N, M)
+
+    Returns
+    -------
+
+    """
+    per_antenna = 1e-3 # mW
+    p_1 = np.sum(antenna_sel > 0, axis=1) * per_antenna
+    p_0 = (np.abs(precode) ** 2).sum(axis=2).sum(axis=1)
+    return p_0 + p_1
+
+
+def solve_ee_greedy(H, ant_sel=True):
+    """
+
+    Parameters
+    ----------
+    H:
+        the channel state, with large scale gain.
+        (_, N, N, K, M)
+
+
+
+    Returns
+    -------
+    precode:
+        precoding vectors, with gain
+        (_, N, N, K, M)
+
+    antenna_sel:
+        antenna selection vector, (no_real, N, M)
+    """
+    no_real, N, N, K, M = H.shape
+    # largest antennas used
+    antenna_sel = np.zeros((no_real, N, M), dtype=np.bool)
+    K_0 = int(M * 0.7)
+    for r in range(no_real):
+        for n in range(N):
+            channel_power_ant = (np.abs(H[r, n, n]) ** 2).sum(axis=-2) # (M, )
+            top_k = np.argsort(channel_power_ant)[0:K_0]
+            antenna_sel[r, n][top_k] = True
+
+    # TODO add H selection based on antenna selection
+    W = get_precoding(H, method="ZF", local_cell_info=True)
+    # power allocation
+    W = np.sqrt(CONFIG["p_t_dl"]) * complex_normalize(W)
+    return W, antenna_sel
+
+
+
+
+
+CONFIG = {
+    "cell": 16,
+    "antenna_per_BS": 20, # no of BS antennas
+    "user_per_cell": 10, # no of single-antenna user
+    "bandwidth": 20e6,
+    "p_t_dl": 100e-3, # downlink transmit power in Watts PER UE
+    "noise_figure": 7,
+}
 
 if __name__ == "__main__":
-    H = get_channel_local_scatter(no_realization=10)
-    W = get_precoding(H, method="ZF", local_cell_info=True)
-    DL_SE(H, W, loop=False)
+    # need to add BS location and UE location figure and config
+    H = get_channel_local_scatter(no_realization=200) # (_, N, N, K, M)
+    W, antenna_sel = solve_ee_greedy(H) # (_, N, K, M)
+    SE_users, sig_users, int_users = SE(H, W) # (_, N, K)
+    SE_cells = SE_users.sum(axis=-1).mean(axis=0) # (_, N)
+    print(SE_cells.mean(), SE_cells.var())
+
 
 
