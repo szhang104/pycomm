@@ -1,6 +1,9 @@
 import numpy as np
 from numpy import ndarray
 from scipy.special import erfinv
+import ctypes
+
+mkl = ctypes.cdll.LoadLibrary("libmkl_rt.so")
 
 def hermitian(X):
     return X.conj().swapaxes(-1, -2)
@@ -63,15 +66,45 @@ def correlated_rayleigh(ue_cnt, bs_cnt, antenna_cnt, R, squeeze=True, realizatio
     return h
 
 
-def receive_signal(p, tau_p, H, gaussian_rng=None):
-    if gaussian_rng is None:
-        gaussian_rng = np.random.randn
-    elif gaussian_rng == 'debug':
-        gaussian_rng = randn2
+def mkl_matmul(A, B, A_trans=None, B_trans=None):
+    # def trans_code(x):
+    #     # 111 for no transpose, 112 for transpose, and 113 for conjugate transpose
+    #     if x is None:
+    #         return 111
+    #     elif x == "transpose":
+    #         return 112
+    #     elif x == "hermitian":
+    #         return 113
+    #
+    # TransA = trans_code(A_trans)
+    # TransB = trans_code(B_trans)
 
-    Np = np.sqrt(0.5) * (
-            randn2(realization_cnt, K, L, f) + 1j * randn2(M, realization_cnt, K, L, f)
-    )
+    TransA = 111
+    TransB = 111
 
+    m = A.shape[1] if TransA == 112 or TransA == 113 else A.shape[0]
+    n = B.shape[0] if TransB == 112 or TransB == 113 else B.shape[1]
+    k = A.shape[0] if TransA == 112 or TransA == 113 else A.shape[1]
+    Order = 101  # 101 for row-major, 102 for column major data structures
+    alpha = 1.0
+    beta = -1.0
+    lda, ldb, ldc = k, n, n # problematic here, need to see doc
+    C = np.zeros((m,n))
 
+    mkl.cblas_dgemm(
+        ctypes.c_int(Order),
+        ctypes.c_int(TransA),
+        ctypes.c_int(TransB),
+        ctypes.c_int(m),
+        ctypes.c_int(n),
+        ctypes.c_int(k),
+        ctypes.c_double(alpha),
+        A.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(lda),
+        B.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(ldb),
+        ctypes.c_double(beta),
+        C.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(ldc))
+    return C
 

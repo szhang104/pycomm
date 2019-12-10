@@ -5,9 +5,8 @@ import scipy as sp
 from model_setup import channel_stat_setup
 from utils import hermitian, mldivide
 import jax
-import ctypes
-mkl = ctypes.cdll.LoadLibrary("libmkl_rt.so")
-
+from utils import mkl_matmul
+import mkl
 
 
 def noise_dbm():
@@ -262,18 +261,18 @@ def get_BS_power(precode, antenna_sel):
     Parameters
     ----------
     precode:
-        precoding vectors, (_, N, N, K, M)
+        precoding vectors, (_, N, K, M)
     antenna_sel
         antenna selection, zero-one (_, N, M)
 
     Returns
     -------
+        per BS powers (_, N)
 
     """
-    per_antenna = 1e-3 # mW
-    p_1 = np.sum(antenna_sel > 0, axis=1) * per_antenna
-    p_0 = (np.abs(precode) ** 2).sum(axis=2).sum(axis=1)
-    return p_0 + p_1
+    p_1 = np.sum(antenna_sel > 0, axis=2) * CONFIG["p_antenna"]
+    p_0 = (np.abs(precode) ** 2).sum(axis=3).sum(axis=2)
+    return p_0 + p_1 + CONFIG["p_fixed"] + CONFIG["p_lo"]
 
 
 def solve_ee_greedy(H, ant_sel=True):
@@ -297,17 +296,26 @@ def solve_ee_greedy(H, ant_sel=True):
         antenna selection vector, (no_real, N, M)
     """
     no_real, N, N, K, M = H.shape
-    # largest antennas used
-    antenna_sel = np.zeros((no_real, N, M), dtype=np.bool)
-    K_0 = int(M * 0.7)
-    for r in range(no_real):
-        for n in range(N):
-            channel_power_ant = (np.abs(H[r, n, n]) ** 2).sum(axis=-2) # (M, )
-            top_k = np.argsort(channel_power_ant)[0:K_0]
-            antenna_sel[r, n][top_k] = True
+    if ant_sel:
 
-    # TODO add H selection based on antenna selection
-    W = get_precoding(H, method="ZF", local_cell_info=True)
+        antenna_sel = np.zeros((no_real, N, M), dtype=np.bool)
+
+        # strongest K_0 antennas
+        K_0 = int(M * 0.8)
+        for r in range(no_real):
+            for n in range(N):
+                channel_power_ant = (np.abs(H[r, n, n]) ** 2).sum(axis=-2) # (M, )
+                top_k = np.argsort(channel_power_ant)[0:K_0]
+                antenna_sel[r, n][top_k] = True
+
+        # or randomly
+
+        H_n = (H.transpose(2, 3, 0, 1, 4) * antenna_sel).transpose(2, 3, 0,
+                                                                   1, 4)
+    else:
+        antenna_sel = np.ones((no_real, N, M), dtype=np.bool)
+        H_n = H
+    W = get_precoding(H_n, method="ZF", local_cell_info=True)
     # power allocation
     W = np.sqrt(CONFIG["p_t_dl"]) * complex_normalize(W)
     return W, antenna_sel
@@ -318,20 +326,34 @@ def solve_ee_greedy(H, ant_sel=True):
 
 CONFIG = {
     "cell": 16,
-    "antenna_per_BS": 20, # no of BS antennas
+    "antenna_per_BS": 50, # no of BS antennas
     "user_per_cell": 10, # no of single-antenna user
     "bandwidth": 20e6,
-    "p_t_dl": 100e-3, # downlink transmit power in Watts PER UE
     "noise_figure": 7,
+    "p_t_dl": 0.2, # downlink transmit power in Watts PER UE
+    "p_antenna": 0.4, # 0.2-0.4, per BS antenna power cost
+    "p_fixed": 10.0,
+    "p_lo": 0.2,
+    "no_real": 30,
 }
 
 if __name__ == "__main__":
     # need to add BS location and UE location figure and config
-    H = get_channel_local_scatter(no_realization=200) # (_, N, N, K, M)
-    W, antenna_sel = solve_ee_greedy(H) # (_, N, K, M)
+    H = get_channel_local_scatter(no_realization=CONFIG["no_real"]) # (_, N, N,
+    # K, M)
+    W, antenna_sel = solve_ee_greedy(H, ant_sel=True) # (_, N, K, M)
     SE_users, sig_users, int_users = SE(H, W) # (_, N, K)
-    SE_cells = SE_users.sum(axis=-1).mean(axis=0) # (_, N)
-    print(SE_cells.mean(), SE_cells.var())
+    SE_cells = SE_users.sum(axis=-1) # (_, N)
+    power_cells = get_BS_power(W, antenna_sel) # (_, N)
+    print("sel", SE_users.mean(), power_cells.mean(), np.mean(SE_cells.sum(
+        axis=1)/power_cells.sum(axis=1)))
+
+    W, antenna_sel = solve_ee_greedy(H, ant_sel=False) # (_, N, K, M)
+    SE_users, sig_users, int_users = SE(H, W) # (_, N, K)
+    SE_cells = SE_users.sum(axis=-1) # (_, N)
+    power_cells = get_BS_power(W, antenna_sel) # (_, N)
+    print("no_sel", SE_users.mean(), power_cells.mean(), np.mean(SE_cells.sum(
+        axis=1)/power_cells.sum(axis=1)))
 
 
 
