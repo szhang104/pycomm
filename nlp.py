@@ -1,8 +1,8 @@
 import jax
-import jax.numpy as janp
-import numpy as np
+import jax.numpy as np
+import numpy as onp
 from qpsolvers import solve_qp
-
+from scipy.optimize import minimize
 
 def abs2(x):
     return x.real ** 2.0 + x.imag ** 2.0
@@ -21,12 +21,11 @@ def hessian(f, argnums = 0):
     return jax.jacfwd(jax.jacrev(f, argnums), argnums)
 
 
-
 def test_gd_complex(alpha=0.1, max_iter=100):
     # sanity test to see if jax autograd gives the right descent direction
     # Never forget to conj() the returned grad if the complex function is real-valued
     # see https://github.com/HIPS/autograd/blob/master/docs/tutorial.md#complex-numbers
-    ww = np.random.randn(2, 2) + 1j * np.random.randn(2, 2)
+    ww = jax.random.randn(2, 2) + 1j * np.random.randn(2, 2)
     ww *= 10.0
     tt = np.random.randn(2, 2) + 1j * np.random.randn(2, 2)
     gk = lambda x: abs2(x-tt).sum()
@@ -39,6 +38,111 @@ def test_gd_complex(alpha=0.1, max_iter=100):
         print(val)
         print(ww-tt)
         ww -= alpha * grad
+
+
+def test_gd_w(K=4, M=12, gamma_db=10, alpha=0.1, max_iter=5):
+    # the problem P1 in bjornson paper, min power precoding subject to
+    # individual user rate
+    # minimize_{w} \sum_k ||w_k||^2
+    # s.t. SINR_k \geq \gamma_k
+
+    def total_power(W):
+        # W is complex (K, M)
+        return abs2(W).sum()
+
+    def SINR(W, H):
+        # H: (K, M)
+        # W: (K, M)
+        all_powers = abs2(H.conj() @ W.transpose()) # (K, K), all powers
+        signal_powers = np.diag(all_powers)
+        intra_intf = all_powers.sum(axis=1) - signal_powers
+        sinr = signal_powers / (intra_intf + 1.0)
+        return sinr
+
+    def optimum(H, l=1, P=1e3):
+        # regularized ZF
+        # H: (K, M)
+        # l is the average user transmit power normalized to P_noise
+        # P is the total transmission power normalized to P_noise
+        W = np.identity(K) + l * H @ H.conj().T
+        p = np.solve()
+        P_sqrt = np.diag(p)
+        return H.T @ np.linalg.solve(W, P_sqrt)
+
+
+    def real2comp(x):
+        return x[:len(x)//2] + 1j * x[len(x)//2:]
+
+    def comp2real(z):
+        return np.concatenate((np.real(z), np.imag(z)))
+
+
+    def u_solve(f, f_grad, x_0, step=0.002, max_iter=500):
+        x = x_0
+        while True:
+            fg = f_grad(x)
+            val = f(x)
+            fg_norm = np.linalg.norm(fg)
+            if fg_norm < 1e-6:
+                break
+            x -= step * (np.conj(fg))
+        return x
+
+    def solve(H, gamma, step=0.05):
+        # need to find a feasible initial!!
+        W = onp.random.randn(K, M) + 1j * onp.random.randn(K, M)
+        u = 10 * np.ones(K,)
+
+        def lagrangian(W, u, H):
+            return total_power(W) \
+                   + u @ (gamma - SINR(W, H)) \
+                   + 50000 * abs2(gamma-SINR(W, H)).sum()
+
+        def lagrangian_real_flat(x, u, H):
+            c_x = real2comp(x)
+            return lagrangian(c_x.reshape(K, M), u, H)
+
+        def lagrangian_grad_real_flat(x, u, H):
+            z = real2comp(x).reshape(K, M)
+            gg = jax.jacrev(lagrangian)
+            grad = gg(z, u, H).conj()
+            return comp2real(grad.reshape(K*M,))
+
+
+        SINR_g = jax.jacrev(SINR, 0)
+        power_vng = jax.value_and_grad(total_power)
+        sinr = SINR(W, H)
+        sinr_grad = SINR_g(W, H)
+        lag_grad = jax.jacrev(lagrangian)
+        W_opt = optimum(H)
+        for i in range(100):
+            print("iter {}".format(i))
+            power, power_grad = power_vng(W)
+            print("obj: {}, SINR: {}".format(power, sinr))
+            print("lag: {}".format(lagrangian(W, u, H)))
+            W_0 = onp.random.randn(K, M) + 1j * onp.random.randn(K, M)
+            res = minimize(lagrangian_real_flat,
+                           comp2real(W_0.reshape(K*M,).copy()),
+                           args=(u, H),
+                           jac=lagrangian_grad_real_flat,
+                           )
+            W = real2comp(res.x).reshape(K, M)
+            # res = minimize(lagrangian,
+            #                W_0.copy(),
+            #                args=(u, H),
+            #                jac=lag_grad
+            #                )
+            sinr = SINR(W, H)
+            u -= step * (gamma - sinr)
+            print(u)
+
+    H = 1/ np.sqrt(2) * (onp.random.randn(K, M) + 1j * onp.random.randn(K, M))
+    gamma = 10 ** (gamma_db / 10)
+    solve(H, gamma)
+
+
+
+
 
 CONFIG = {
     "p_n": 1e-9, # receiver noise power
@@ -58,20 +162,24 @@ def user_int_plus_noise(w_intra, phi, t, h):
     # with respect to a certain user bk
     # w_intra is (K-1, N_ant) complex vector containing all the precoding vec
     # of K-1 co-cell users. The caller needs to track the exact id's of these
+    # phi is the total received inter-cell interference
     p_intra = np.sum(
         aH_dot_x_square(w, h) for w in w_intra)
     return phi + p_intra + CONFIG["p_n"] - t
+
 
 def cell_power(w_b, v_b, c_b):
     # w_b is the precoding used by cell b
     # C^{K, M}
     p_trans = abs2(w_b).sum()
-    return p_trans + CONFIG["N_b"] * CONFIG["P_ant"] + v_b * CONFIG["P_sg"] -\
-           c_b + CONFIG["P_fixed"]
+    return p_trans \
+           + CONFIG["N_b"] * CONFIG["P_ant"] \
+           + v_b * CONFIG["P_sg"] \
+           + CONFIG["P_fixed"] - c_b
 
 
-def user_sinr(s, t, h_r, h_i, w_r, w_i):
-    p_sig = aH_dot_x_square(w_r, w_i, h_r, h_i)
+def user_sinr(s, t, h, w):
+    p_sig = aH_dot_x_square(w, h)
     return s * t - p_sig
 
 
@@ -102,20 +210,15 @@ def cell_give_take_intf(Ψ_all, Φ, D):
 
 class BS_State:
     def __init__(self, i, H):
-        id = i
-        w = H[id, id] # initial precoding set to maximum combining
-        Φ = 1e-7 * np.ones(H.shape[2]) # initial interference from other cells
-        u = 0.0
-        v = 10.0
-        c = 10.0
-        t = 1e-6 * np.ones(H.shape[2])
-        r = 0.02
-
-
-
-    def __add__(self, other):
-        BS_State
-        return
+        self.id = i
+        self.w = H[id, id] # initial precoding set to maximum combining
+        # initial interference from other cells
+        self.Φ = 1e-7 * np.ones(H.shape[2])
+        self.u = 0.0
+        self.v = 10.0
+        self.c = 10.0
+        self.t = 1e-6 * np.ones(H.shape[2])
+        self.r = 0.02
 
 
 def solve_sub():
@@ -196,12 +299,8 @@ def solver(obj, constraints):
 
 
 
-
-
-a = np.array([1+2j, 2-3j])
-x = np.array([2+3j, 4-1j])
-
-solver(ex727_obj, [ex727_e2, ex727_e3])
+if __name__ == "__main__":
+    test_gd_w()
 
 
 
