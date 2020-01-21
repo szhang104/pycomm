@@ -4,11 +4,41 @@ import numpy as np
 from qpsolvers import solve_qp
 
 
-def aH_dot_x_square(x_r, x_i, a_r, a_i):
+def abs2(x):
+    return x.real ** 2.0 + x.imag ** 2.0
+
+
+def aH_dot_x_square(x, a):
+    # x, a are complex vectors
+    return abs2(a.conj() @ x)
+
+
+def aH_dot_x_square_real(x_r, x_i, a_r, a_i):
     return (a_r @ x_r + a_i @ x_i) ** 2.0 + (a_r @ x_i - a_i @ x_r) ** 2.0
 
-def hessian(f):
-    return jax.jacfwd(jax.jacrev(f))
+
+def hessian(f, argnums = 0):
+    return jax.jacfwd(jax.jacrev(f, argnums), argnums)
+
+
+
+def test_gd_complex(alpha=0.1, max_iter=100):
+    # sanity test to see if jax autograd gives the right descent direction
+    # Never forget to conj() the returned grad if the complex function is real-valued
+    # see https://github.com/HIPS/autograd/blob/master/docs/tutorial.md#complex-numbers
+    ww = np.random.randn(2, 2) + 1j * np.random.randn(2, 2)
+    ww *= 10.0
+    tt = np.random.randn(2, 2) + 1j * np.random.randn(2, 2)
+    gk = lambda x: abs2(x-tt).sum()
+    gkg = jax.value_and_grad(gk)
+
+    for i in range(max_iter):
+        val, grad = gkg(ww)
+        grad = grad.conj()
+        print("iter {}".format(i))
+        print(val)
+        print(ww-tt)
+        ww -= alpha * grad
 
 CONFIG = {
     "p_n": 1e-9, # receiver noise power
@@ -20,21 +50,22 @@ CONFIG = {
     "r_min": 4e8, # minimum user rate
 }
 
+
 # Indicator functions to use as constraints
 # return value non-positive as satisfying the constraint
 # gradient information derived from these functions
-def user_int_plus_noise(w_intra_r, w_intra_i, phi, t, h_r, h_i):
+def user_int_plus_noise(w_intra, phi, t, h):
     # with respect to a certain user bk
     # w_intra is (K-1, N_ant) complex vector containing all the precoding vec
     # of K-1 co-cell users. The caller needs to track the exact id's of these
     p_intra = np.sum(
-        aH_dot_x_square(w_r, w_i, h_r, h_i) for (w_r, w_i) in (w_intra_r,
-                                                               w_intra_i))
+        aH_dot_x_square(w, h) for w in w_intra)
     return phi + p_intra + CONFIG["p_n"] - t
 
-def cell_power(w_b_r, w_b_i, v_b, c_b):
-    # w_b is the precoding for user bk
-    p_trans = (w_b_r ** 2 + w_b_i ** 2).sum()
+def cell_power(w_b, v_b, c_b):
+    # w_b is the precoding used by cell b
+    # C^{K, M}
+    p_trans = abs2(w_b).sum()
     return p_trans + CONFIG["N_b"] * CONFIG["P_ant"] + v_b * CONFIG["P_sg"] -\
            c_b + CONFIG["P_fixed"]
 
