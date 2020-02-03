@@ -65,7 +65,7 @@ def test_gd_w(K=4, M=12, gamma_db=10, alpha=0.1, max_iter=5):
         # l is the average user transmit power normalized to P_noise
         # P is the total transmission power normalized to P_noise
         W = np.identity(K) + l * H @ H.conj().T
-        p = np.solve()
+        p = np.linalg.solve(W, H)
         P_sqrt = np.diag(p)
         return H.T @ np.linalg.solve(W, P_sqrt)
 
@@ -77,18 +77,31 @@ def test_gd_w(K=4, M=12, gamma_db=10, alpha=0.1, max_iter=5):
         return np.concatenate((np.real(z), np.imag(z)))
 
 
-    def u_solve(f, f_grad, x_0, step=0.002, max_iter=500):
+    def gd(f, f_grad, x_0, step=0.01, args=None, max_iter=500, debug=False):
         x = x_0
+        step0 = step
+        delta_x = lambda x: -step * (np.conj(fg))
         while True:
-            fg = f_grad(x)
-            val = f(x)
-            fg_norm = np.linalg.norm(fg)
-            if fg_norm < 1e-6:
+            step = step0
+            fg = f_grad(x, *args)
+            val = f(x, *args)
+
+            # line search for a good step size
+
+            while f( x + delta_x(x), *args) >= val:
+                step = step / 2
+            x += delta_x(x)
+
+            delta_x_mean = np.abs(delta_x(x)).mean()
+            if debug:
+                print(val, delta_x_mean)
+
+            if delta_x_mean < 1e-6:
                 break
-            x -= step * (np.conj(fg))
+
         return x
 
-    def solve(H, gamma, step=0.05):
+    def solve(H, gamma, step=0.05, method="np"):
         # need to find a feasible initial!!
         W = onp.random.randn(K, M) + 1j * onp.random.randn(K, M)
         u = 10 * np.ones(K,)
@@ -114,19 +127,25 @@ def test_gd_w(K=4, M=12, gamma_db=10, alpha=0.1, max_iter=5):
         sinr = SINR(W, H)
         sinr_grad = SINR_g(W, H)
         lag_grad = jax.jacrev(lagrangian)
-        W_opt = optimum(H)
+        # W_opt = optimum(H)
+
         for i in range(100):
             print("iter {}".format(i))
             power, power_grad = power_vng(W)
             print("obj: {}, SINR: {}".format(power, sinr))
             print("lag: {}".format(lagrangian(W, u, H)))
             W_0 = onp.random.randn(K, M) + 1j * onp.random.randn(K, M)
-            res = minimize(lagrangian_real_flat,
-                           comp2real(W_0.reshape(K*M,).copy()),
-                           args=(u, H),
-                           jac=lagrangian_grad_real_flat,
-                           )
-            W = real2comp(res.x).reshape(K, M)
+            if method == "gd":
+                res = gd(lagrangian, lag_grad, W_0, args=(u, H), step=0.001, debug=True)
+                new_x = res
+            elif method == "np":
+                res = minimize(total_power,
+                               comp2real(W_0.reshape(K*M,).copy()),
+                               args=(u, H),
+                               jac=lagrangian_grad_real_flat,
+                               )
+                new_x = res.x
+            W = real2comp(new_x).reshape(K, M)
             # res = minimize(lagrangian,
             #                W_0.copy(),
             #                args=(u, H),
@@ -138,7 +157,7 @@ def test_gd_w(K=4, M=12, gamma_db=10, alpha=0.1, max_iter=5):
 
     H = 1/ np.sqrt(2) * (onp.random.randn(K, M) + 1j * onp.random.randn(K, M))
     gamma = 10 ** (gamma_db / 10)
-    solve(H, gamma)
+    solve(H, gamma, method="np")
 
 
 
