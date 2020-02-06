@@ -148,13 +148,14 @@ def min_sinr_req(min_sinr, h, w, w_all, P_other=0.0):
     return cons_soc
 
 
-def maxee(H, P_user_max=1e-3, SINR_user_min=1e2):
+def min_power(H, P_user_max, SINR_user_min):
     """
-    Solve max ee
+    Solve the minimum single cell power given the minimum SINR required
     :param H: input channel state. (K, M) complex
+    :param P_user_max: maximum transmit power per user. the norm of w
+    :param SINR_user_min: minimum per user SINR, in absolute number
     :return: W
     """
-
     def w_numpy(W):
         res = np.stack([x.value for x in W])
         return to_imag(res)
@@ -172,14 +173,14 @@ def maxee(H, P_user_max=1e-3, SINR_user_min=1e2):
     # power
     for u in users:
         cons_power.append(
-            cnorm2(W[u]) <= P_user_max)
+            cnorm2(W[u]) <= P_user_max[u])
 
     # min SINR req
     # used a common trick to add these constraints as second-order cone
     # constraint which is convex
     for u in users:
         cons_sinr.append(
-            min_sinr_req(SINR_user_min, H_r[u], W[u], W))
+            min_sinr_req(SINR_user_min[u], H_r[u], W[u], W))
 
     # for the above to work, all h_i^H w_i must be real-valued
     # add these linear equality constraints so no big deal
@@ -194,22 +195,65 @@ def maxee(H, P_user_max=1e-3, SINR_user_min=1e2):
         cons_power + cons_sinr + cons_force_real
     )
     prob.solve()
+    if prob.status == "infeasible":
+        raise RuntimeError("infeasible")
+    sol = w_numpy(W)
+    return prob.status, sol
 
-    if prob.status == ["infeasible", "unbounded"]:
-        raise RuntimeError("The sub-problem is {}".format(prob.status))
-    else:
-        print(prob.status, prob.value)
-        sol = w_numpy(W)
-        for x in cons_power:
-            print(x.dual_value)
-        return sol
+
+def maxee(H, P_user_max=1e-3, SINR_user_min=1e2, max_iter=200, eps=1e-3,
+          eta=1e1):
+    B = 1e7 # 10M
+
+    def user_rate(H, W):
+        HHW2 = np.abs(H.conj() @ W.T) ** 2.0
+        p_sig = np.diag(HHW2)
+        p_int = HHW2 - np.diag(p_sig)
+        SINR = p_sig / (p_int.sum(axis=1) + 1.0)
+        rate = B * np.log2(1 + SINR)
+        return rate
+
+    def user_power(W):
+        return np.sum(np.abs(W) ** 2.0, axis=1)
+
+    def delta_rate_to_delta_SINR(delta_rate, cur_SINR):
+        return (2.0 ** (delta_rate / B) - 1) * (1 + cur_SINR)
+
+
+    K, M = H.shape[0], H.shape[1]
+    P_req = P_user_max * np.ones(K)
+    SINR_req = SINR_user_min * np.ones(K)
+    for it in range(max_iter):
+        status, W = min_power(H, P_req, SINR_req)
+        if status in ["optimal", "optimal_inaccurate"]:
+            user_rate_v = user_rate(H, W)
+            user_power_v = user_power(W)
+            EE = user_rate_v.sum() / user_power_v.sum() / 1e3 / 1e6
+
+            print("iter {}: EE: {} Mbit/ mJ".format(iter, EE))
+            print(user_power_v * 1e3)
+            print(user_rate_v / 1e6)
+            j = np.argmax(abs(user_power_v - P_user_max)) # the user with the
+            # most slack power budget
+            # now add more SINR
+            to_add_r = eta * user_power_v.sum() * 1e3 * 1e6
+            # P_req = user_power_v
+            delta_SINR_j = delta_rate_to_delta_SINR(to_add_r, SINR_req[j])
+            SINR_req[j] -= delta_SINR_j
+        else:
+            raise RuntimeError("The sub-problem is {}".format(status))
+
+
+
+
 
 
 if __name__ == "__main__":
-    K, M = 20, 100
+    K, M = 5, 50
     P_user_max = 1e-3 * 10 ** (-1)  # -10 dBm
     SINR_user_min = 1e2  # 20dB
-    P_noise = 1e-3 * 10 ** (-10.4)  # -104dbm
+    B = 1e7
+    P_noise = 1e-3 * 10 ** (0.1 * (-174 + 10 * np.log10(B))) # should be -104dBm
 
     H = 1 / np.sqrt(2) * (np.random.randn(K, M) + 1j * np.random.randn(K, M))
     H = 1e-4 * H  # channel gain is -80 dB
@@ -217,10 +261,12 @@ if __name__ == "__main__":
         axis=1) /
                         P_noise)
 
-    W = maxee(H / np.sqrt(P_noise), P_user_max=P_user_max,
+    W = maxee(H / np.sqrt(P_noise),
+              P_user_max=P_user_max,
               SINR_user_min=SINR_user_min)
-    H_norm = np.sqrt((np.abs(H) ** 2).sum(axis=1))
 
-    W_MR = P_user_max * (H.T / H_norm).T
-    HHW = np.abs(H @ W.conj().T) ** 2 / P_noise
-    HHW_MR = np.abs(H @ W_MR.conj().T) ** 2 / P_noise
+    # H_norm = np.sqrt((np.abs(H) ** 2).sum(axis=1))
+    #
+    # W_MR = P_user_max * (H.T / H_norm).T
+    # HHW = np.abs(H @ W.conj().T) ** 2 / P_noise
+    # HHW_MR = np.abs(H @ W_MR.conj().T) ** 2 / P_noise
