@@ -195,14 +195,19 @@ def min_power(H, P_user_max, SINR_user_min):
         cons_power + cons_sinr + cons_force_real
     )
     prob.solve()
-    if prob.status == "infeasible":
-        raise RuntimeError("infeasible")
-    sol = w_numpy(W)
+    sol = None
+    if prob.status in ["optimal", "optimal_inaccurate"]:
+        sol = w_numpy(W)
     return prob.status, sol
 
 
-def maxee(H, P_user_max=1e-3, SINR_user_min=1e2, max_iter=200, eps=1e-3,
-          eta=1e1):
+def maxee(H,
+          P_user_max=1e-4,
+          SINR_user_min=1e0,
+          max_iter=200,
+          eps=1e-3,
+          eta=1e-2,
+          P_fixed=1e-3):
     B = 1e7 # 10M
 
     def user_rate(H, W):
@@ -219,29 +224,44 @@ def maxee(H, P_user_max=1e-3, SINR_user_min=1e2, max_iter=200, eps=1e-3,
     def delta_rate_to_delta_SINR(delta_rate, cur_SINR):
         return (2.0 ** (delta_rate / B) - 1) * (1 + cur_SINR)
 
+    def report(it, user_rate_v, user_power_v, EE):
+        print("============Iter {}===============".format(it))
+        print("EE: {} Mbit/ mJ".format(EE / 1e9))
+        print("User rates in Mbits/s: {}\n{}".format(
+            total_rate / 1e6, user_rate_v / 1e6))
+        print("User powers in mW: {}\n{}".format(total_power * 1e3,
+                                                 user_power_v * 1e3))
+        if it > 0:
+            print("rate change: {}, power change: {}, ratio: {}".format(
+                (total_rate - o_total_rate) / 1e6,
+                (total_power - o_total_power) * 1e3,
+            (total_rate - o_total_rate) / (total_power - o_total_power) / 1e9
+            ))
+
 
     K, M = H.shape[0], H.shape[1]
     P_req = P_user_max * np.ones(K)
     SINR_req = SINR_user_min * np.ones(K)
     for it in range(max_iter):
         status, W = min_power(H, P_req, SINR_req)
-        if status in ["optimal", "optimal_inaccurate"]:
-            user_rate_v = user_rate(H, W)
-            user_power_v = user_power(W)
-            EE = user_rate_v.sum() / user_power_v.sum() / 1e3 / 1e6
-
-            print("iter {}: EE: {} Mbit/ mJ".format(iter, EE))
-            print(user_power_v * 1e3)
-            print(user_rate_v / 1e6)
-            j = np.argmax(abs(user_power_v - P_user_max)) # the user with the
-            # most slack power budget
-            # now add more SINR
-            to_add_r = eta * user_power_v.sum() * 1e3 * 1e6
-            # P_req = user_power_v
-            delta_SINR_j = delta_rate_to_delta_SINR(to_add_r, SINR_req[j])
-            SINR_req[j] -= delta_SINR_j
-        else:
-            raise RuntimeError("The sub-problem is {}".format(status))
+        if status not in ["optimal", "optimal_inaccurate"]:
+            print("The sub-problem is {}".format(status))
+            break
+        if it > 0:
+            o_total_rate, o_total_power = total_rate, total_power
+        user_rate_v = user_rate(H, W)
+        user_power_v = user_power(W)
+        total_rate, total_power = user_rate_v.sum(), user_power_v.sum() + P_fixed
+        EE = total_rate / total_power
+        report(it, user_rate_v, user_power_v, EE)
+        j = np.argmax(abs(user_power_v - P_user_max)) # the user with the
+        # most slack power budget
+        # now add more SINR
+        to_add_r = eta * total_rate
+        # P_req = user_power_v
+        delta_SINR_j = delta_rate_to_delta_SINR(to_add_r, SINR_req[j])
+        SINR_req[j] += delta_SINR_j
+        # SINR_req -= delta_SINR_j / K
 
 
 
