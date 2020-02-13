@@ -3,6 +3,7 @@ import scipy as sp
 import cvxpy as cp
 import dccp
 
+
 def t_posdef():
     # testing if the matrix B = A^T A, A = [  h_R  h_I ]
     #                                      [ -h_I  h_R ]
@@ -155,6 +156,7 @@ def min_power(H, P_user_max, SINR_user_min):
     :param SINR_user_min: minimum per user SINR, in absolute number
     :return: W
     """
+
     def w_numpy(W):
         res = np.stack([x.value for x in W])
         return to_imag(res)
@@ -202,15 +204,12 @@ def min_power(H, P_user_max, SINR_user_min):
 
 def maxee(H,
           P_user_max=1e-1,
-          SINR_user_min=10**(8/10), # 8dB
+          SINR_user_min=10 ** (8 / 10),  # 8dB
           max_iter=200,
           eps=1e-3,
-          eta=2*1e-2,
+          eta=2 * 1e-2,
           P_fixed=5.0,
-          B=20*1e6):
-
-
-
+          B=20 * 1e6):
     def delta_rate_to_delta_SINR(delta_rate, cur_SINR):
         return (2.0 ** (delta_rate / B) - 1) * (1 + cur_SINR)
 
@@ -225,9 +224,9 @@ def maxee(H,
             print("rate change: {}, power change: {}, ratio: {}".format(
                 (total_rate - o_total_rate) / 1e6,
                 (total_power - o_total_power) * 1e3,
-            (total_rate - o_total_rate) / (total_power - o_total_power) / 1e6
+                (total_rate - o_total_rate) / (
+                            total_power - o_total_power) / 1e6
             ))
-
 
     K, M = H.shape[0], H.shape[1]
     P_req = P_user_max * np.ones(K)
@@ -239,7 +238,7 @@ def maxee(H,
             break
         if it > 0:
             o_total_rate, o_total_power, old_EE, old_W = total_rate, \
-                                                      total_power, EE, W
+                                                         total_power, EE, W
         user_rate_v = user_rate(H, W, B)
         user_power_v = user_power(W)
         total_rate, total_power = user_rate_v.sum(), user_power_v.sum() + P_fixed
@@ -247,7 +246,7 @@ def maxee(H,
         if it > 0 and EE < old_EE:
             break
         report()
-        j = np.argmax(abs(user_power_v - P_user_max)) # the user with the
+        j = np.argmax(abs(user_power_v - P_user_max))  # the user with the
         # most slack power budget
         # now add more SINR
         to_add_r = eta * total_rate
@@ -259,7 +258,7 @@ def maxee(H,
 
 
 def db2real_power(x):
-    return 10 ** ( x / 10 )
+    return 10 ** (x / 10)
 
 
 def user_rate(H, W, B):
@@ -289,7 +288,7 @@ def large_scale_fading(d,
               - 10 * alpha * np.log10(d / 1000)
     if has_shadow_fading:
         shadow_fading = np.random.normal(0.0, shadow_fading_var, n)
-        gain_db += shadow_fading # shadow fading
+        gain_db += shadow_fading  # shadow fading
     return db2real_power(gain_db)
 
 
@@ -304,10 +303,10 @@ def uncorrelated_rayleigh(K, M, beta, inst=1):
 
 def test_uncorrelated_rayleigh():
     K, M = 3, 4
-    beta= np.array([1.0, 2.0, 3.0])
+    beta = np.array([1.0, 2.0, 3.0])
     H = uncorrelated_rayleigh(K, M, beta, inst=2000)
     H = np.expand_dims(H, axis=3)
-    R = np.mean(H.conj() @ H.transpose((0,1,3,2)), axis=0)
+    R = np.mean(H.conj() @ H.transpose((0, 1, 3, 2)), axis=0)
     return R
 
 
@@ -330,24 +329,24 @@ def complex_normalize(X, axis=-1):
     mags = np.linalg.norm(np.abs(X), axis=axis, keepdims=True)
     return X / mags
 
+
 if __name__ == "__main__":
     K, M = 10, 40
     P_user_max = 0.1  #
-    SINR_user_min = 10 ** (7 / 10)   # 7dB
-    B = 20*1e6
+    SINR_user_min = 10 ** (7 / 10)  # 7dB
+    B = 20 * 1e6
     P_fixed = 5.0
     # should be -101dBm for 20MHz bandwidth
     # P_noise = 1e-3 * 10 ** (0.1 * (-174 + 10 * np.log10(B)))
     # or as in bjornsson book, set to -94 dBm
     P_noise = 1e-3 * 10 ** (0.1 * -94)
 
-
-    d = np.random.uniform(35, 124, size=(K,)) # cell radius 125m, minimum
+    d = np.random.uniform(35, 124, size=(K,))  # cell radius 125m, minimum
     print(d)
     # dist with BS is 35m
     beta = large_scale_fading(d, has_shadow_fading=False)
 
-    H = uncorrelated_rayleigh(K, M, beta) # first dimension is instance, K, M
+    H = uncorrelated_rayleigh(K, M, beta)  # first dimension is instance, K, M
     snr = 10 * np.log10(np.power(np.abs(np.sqrt(P_user_max) * H), 2).mean(
         axis=-1) / P_noise)
 
@@ -355,13 +354,13 @@ if __name__ == "__main__":
         H_ = H_ / np.sqrt(P_noise)
         # Must normalize H against noise power before use!!
         W_ee = maxee(H_,
-                  P_user_max=P_user_max,
-                  SINR_user_min=SINR_user_min,
-                  B=B)
+                     P_user_max=P_user_max,
+                     SINR_user_min=SINR_user_min,
+                     B=B)
         W_zf = np.sqrt(P_user_max) * complex_normalize(zf(H_))
         P_zf = user_power(W_zf) + P_fixed
         R_zf = (user_rate(H_, W_zf, B))
-        print(R_zf.sum()/P_zf.sum()/1e6)
+        print(R_zf.sum() / P_zf.sum() / 1e6)
 
     # H_norm = np.sqrt((np.abs(H) ** 2).sum(axis=1))
     #
