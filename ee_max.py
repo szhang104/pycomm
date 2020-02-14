@@ -2,7 +2,8 @@ import numpy as np
 import scipy as sp
 import cvxpy as cp
 import dccp
-
+import pandas as pd
+import os
 
 def t_posdef():
     # testing if the matrix B = A^T A, A = [  h_R  h_I ]
@@ -203,13 +204,15 @@ def min_power(H, P_user_max, SINR_user_min):
 
 
 def maxee(H,
+          ant_sel=True,
+          dir_down=False,
           P_user_max=1e-1,
           SINR_user_min=10 ** (8 / 10),  # 8dB
           max_iter=200,
-          eps=1e-3,
           eta=2 * 1e-2,
-          P_fixed=5.0,
-          B=20 * 1e6):
+          B=20 * 1e6,
+          verbose=True,):
+
     def delta_rate_to_delta_SINR(delta_rate, cur_SINR):
         return (2.0 ** (delta_rate / B) - 1) * (1 + cur_SINR)
 
@@ -218,43 +221,81 @@ def maxee(H,
         print("EE: {} Mbit/ J".format(EE / 1e6))
         print("User rates in Mbits/s: {}\n{}".format(
             total_rate / 1e6, user_rate_v / 1e6))
-        print("User powers in mW: {}\n{}".format(total_power * 1e3,
-                                                 user_power_v * 1e3))
+        print("Transmit powers in mW: {}\n{}".format(total_power * 1e3,
+                                                 transmit_power_v * 1e3))
         if it > 0:
             print("rate change: {}, power change: {}, ratio: {}".format(
-                (total_rate - o_total_rate) / 1e6,
-                (total_power - o_total_power) * 1e3,
-                (total_rate - o_total_rate) / (
-                            total_power - o_total_power) / 1e6
+                (n_total_rate - total_rate) / 1e6,
+                (n_total_power - total_power) * 1e3,
+                (n_total_rate - total_rate) / (
+                            n_total_power - total_power) / 1e6
             ))
+    res = {}
+
+    if ant_sel:
+        H = trim_H(H)
 
     K, M = H.shape[0], H.shape[1]
+    EE = 0.0
+    W = None
     P_req = P_user_max * np.ones(K)
-    SINR_req = SINR_user_min * np.ones(K)
+    if dir_down == False:
+        SINR_req = SINR_user_min * np.ones(K)
+    else:
+        wzf = np.sqrt(P_user_max) * complex_normalize(zf(H))
+        HHW2 = np.abs(H.conj() @ wzf.T) ** 2.0
+        p_sig = np.diag(HHW2)
+        p_int = HHW2 - np.diag(p_sig)
+        SINR_zf = p_sig / (p_int.sum(axis=1) + 1.0)
+        SINR_req = SINR_zf
     for it in range(max_iter):
-        status, W = min_power(H, P_req, SINR_req)
+        status, n_W = min_power(H, P_req, SINR_req)
         if status not in ["optimal", "optimal_inaccurate"]:
             print("The sub-problem is {}".format(status))
+            if it == 0:
+                res['status'] = 'infeasible'
+            else:
+                res['status'] = 'success'
             break
-        if it > 0:
-            o_total_rate, o_total_power, old_EE, old_W = total_rate, \
-                                                         total_power, EE, W
-        user_rate_v = user_rate(H, W, B)
-        user_power_v = user_power(W)
-        total_rate, total_power = user_rate_v.sum(), user_power_v.sum() + P_fixed
-        EE = total_rate / total_power
-        if it > 0 and EE < old_EE:
+        n_user_rate_v = user_rate(H, n_W, B)
+        n_transmit_power_v = transmit_power(n_W)
+        n_total_rate, n_total_power = n_user_rate_v.sum(), get_total_power(
+            n_W).sum()
+        n_EE = n_total_rate / n_total_power
+        if it > 0 and n_EE < EE:
+            print("past the highest point")
+            res['status'] = 'success'
             break
-        report()
-        j = np.argmax(abs(user_power_v - P_user_max))  # the user with the
-        # most slack power budget
-        # now add more SINR
-        to_add_r = eta * total_rate
-        # P_req = user_power_v
-        delta_SINR_j = delta_rate_to_delta_SINR(to_add_r, SINR_req[j])
-        SINR_req[j] += delta_SINR_j
-        # SINR_req -= delta_SINR_j / K
-    return old_W
+        EE, W = n_EE, n_W
+        user_rate_v, transmit_power_v = n_user_rate_v, n_transmit_power_v
+        total_rate, total_power = n_total_rate, n_total_power
+        if verbose:
+            report()
+        if not dir_down:
+            j = np.argmax(abs(transmit_power_v - P_user_max))  # the user with the
+            # most slack power budget
+            # now add more SINR
+            to_add_r = eta * total_rate
+            # P_req = user_power_v
+            delta_SINR_j = delta_rate_to_delta_SINR(to_add_r, SINR_req[j])
+            SINR_req[j] += delta_SINR_j
+        else:
+            j = np.argmax(abs(user_rate_v))
+            SINR_req[j] -= 10
+    res['W'] = W
+    res['user_rate'] = user_rate_v
+    res['transmit_power'] = transmit_power_v
+    res['total_power'] = total_power
+    return res
+
+
+def trim_H(H, prune_count=None):
+    # H is (K, M)
+    norms= [(np.abs(x) ** 2).sum() for x in H.T]
+    prune_count = int(H.shape[1] * 0.2)
+    sort_index = np.argsort(norms)
+    H_trimmed = np.delete(H, sort_index[0:prune_count], axis=1)
+    return H_trimmed
 
 
 def db2real_power(x):
@@ -270,8 +311,16 @@ def user_rate(H, W, B):
     return rate
 
 
-def user_power(W):
+def transmit_power(W):
     return np.sum(np.abs(W) ** 2.0, axis=1)
+
+
+def get_total_power(W):
+    M = W.shape[-1]
+    P_fixed = 0.5
+    P_per_antenna = 0.02
+    return transmit_power(W).sum() + P_per_antenna * M + P_fixed
+
 
 
 def large_scale_fading(d,
@@ -311,10 +360,14 @@ def test_uncorrelated_rayleigh():
 
 
 def zf(H):
-    A = H.conj().T @ H
+    A = H @ H.conj().T
     B = H
-    # solve x A = B
-    return np.linalg.solve(A, B.conj().transpose()).conj().transpose()
+    # solve A x = B
+    y = np.linalg.solve(A, B)
+    return complex_normalize(y)
+
+def mr(H):
+    return complex_normalize(H)
 
 
 def complex_normalize(X, axis=-1):
@@ -330,40 +383,125 @@ def complex_normalize(X, axis=-1):
     return X / mags
 
 
-if __name__ == "__main__":
-    K, M = 10, 40
-    P_user_max = 0.1  #
-    SINR_user_min = 10 ** (7 / 10)  # 7dB
-    B = 20 * 1e6
-    P_fixed = 5.0
-    # should be -101dBm for 20MHz bandwidth
-    # P_noise = 1e-3 * 10 ** (0.1 * (-174 + 10 * np.log10(B)))
-    # or as in bjornsson book, set to -94 dBm
-    P_noise = 1e-3 * 10 ** (0.1 * -94)
+def concrete_var(alpha, T=1.0, samples=1):
+    # usually T > 0.05 otherwise there is overflow in the exponential
+    # the output is approximately one-hot according to the alpha values
+    n = alpha.shape[-1]
+    g = np.random.gumbel(size=(samples, n))
+    x = np.exp(1 / T * (np.log(alpha) + g))
+    return (x.T / x.sum(axis=-1)).T
 
-    d = np.random.uniform(35, 124, size=(K,))  # cell radius 125m, minimum
-    print(d)
-    # dist with BS is 35m
+
+def setup(K, M, no_cells=1, seed=12345, inst_count=1):
+    np.random.seed(seed)
+    # cell radius 125m, minimum dist with BS is 35m
+    d = np.random.uniform(35, 124, size=(K,))
     beta = large_scale_fading(d, has_shadow_fading=False)
+    H = uncorrelated_rayleigh(K, M, beta, inst=inst_count) # first dimension is instance,
+    # K, M
+    return H
 
-    H = uncorrelated_rayleigh(K, M, beta)  # first dimension is instance, K, M
-    snr = 10 * np.log10(np.power(np.abs(np.sqrt(P_user_max) * H), 2).mean(
-        axis=-1) / P_noise)
 
+def exp(K, M, seed=12345):
+    print(K, M)
+    P_user_max = 0.1 # 20dBm
+    # noise power set to -94dBm, as in the book
+    # or use formula
+    # P_noise = 1e-3 * 10 ** (0.1 * (-174 + 10 * np.log10(B)))
+    P_noise = 1e-3 * 10 ** (0.1 * -94)
+    B = 20 * 1e6 # 20MHz bandwidth
+    SINR_user_min = 10 ** (7 / 10)  # 7dB
+    H = setup(K, M, seed=seed)
+    snr = 10 * np.log10(
+        np.power(np.abs(np.sqrt(P_user_max) * H), 2).mean(axis=-1) / P_noise)
+    r = {}
+    p = {}
     for H_ in H:
         H_ = H_ / np.sqrt(P_noise)
-        # Must normalize H against noise power before use!!
-        W_ee = maxee(H_,
-                     P_user_max=P_user_max,
-                     SINR_user_min=SINR_user_min,
-                     B=B)
-        W_zf = np.sqrt(P_user_max) * complex_normalize(zf(H_))
-        P_zf = user_power(W_zf) + P_fixed
-        R_zf = (user_rate(H_, W_zf, B))
-        print(R_zf.sum() / P_zf.sum() / 1e6)
 
-    # H_norm = np.sqrt((np.abs(H) ** 2).sum(axis=1))
-    #
-    # W_MR = P_user_max * (H.T / H_norm).T
-    # HHW = np.abs(H @ W.conj().T) ** 2 / P_noise
-    # HHW_MR = np.abs(H @ W_MR.conj().T) ** 2 / P_noise
+        W_zf = np.sqrt(P_user_max) * zf(H_)
+        p["zf"] = get_total_power(W_zf)
+        r["zf"] = user_rate(H_, W_zf, B)
+        print(r["zf"].sum() / p["zf"].sum() / 1e6)
+
+        # W_new = maxee(
+        #     H_,
+        #     ant_sel=False,
+        #     P_user_max=P_user_max,
+        #     SINR_user_min=SINR_user_min,
+        #     B=B, verbose=True,
+        #     dir_down=True,
+        #     eta=0.01
+        # )
+
+
+
+
+        W_mr = np.sqrt(P_user_max) * mr(H_)
+        p["mr"] = get_total_power(W_mr)
+        r["mr"] = user_rate(H_, W_mr, B)
+
+        res_ee = maxee(H_,
+                  ant_sel=True,
+                  P_user_max=P_user_max,
+                  SINR_user_min=SINR_user_min,
+                  B=B, verbose=False,
+                eta=0.01)
+        r["ee"] = res_ee['user_rate']
+        p["ee"] = res_ee['total_power']
+
+        res_ee_noant = maxee(H_,
+                  ant_sel=False,
+                  P_user_max=P_user_max,
+                  SINR_user_min=SINR_user_min,
+                  B=B, verbose=False)
+        r["ee_noant"] = res_ee_noant['user_rate']
+        p["ee_noant"] = res_ee_noant['total_power']
+
+
+
+        for x in ["ee", "ee_noant", "zf", "mr"]:
+            print(x)
+            print('{:8.3f} Mbit/s : {:8.3f} W @ {:8.3f} Mbit/J'.format(
+                r[x].sum() / 1e6,
+                p[x],
+                r[x].sum() / p[x].sum() / 1e6
+            ))
+
+
+def t_zf():
+    H = setup(10, 100, 1, 12345, inst_count=200)
+    P_user_max = 0.1 # 20dBm
+    # noise power set to -94dBm, as in the book
+    # or use formula
+    # P_noise = 1e-3 * 10 ** (0.1 * (-174 + 10 * np.log10(B)))
+    P_noise = 1e-3 * 10 ** (0.1 * -94)
+    B = 20 * 1e6 # 20MHz bandwidth
+    r = []
+    for H_ in H:
+        W_zf = np.sqrt(P_user_max) * complex_normalize(zf(H_))
+        H_ = H_ / np.sqrt(P_noise)
+        r.append(user_rate(H_, W_zf, B) / B)
+    res = np.array(r).mean(axis=0)
+    snr = 10 * np.log10(
+        np.power(np.abs(np.sqrt(P_user_max) * H), 2).mean(axis=-1).mean(
+            axis=0) /
+        P_noise)
+    print(res.sum())
+    return res
+
+
+def vary_M():
+    K = 20
+    for m in range(40, 160, 10):
+        exp(K, m)
+
+
+if __name__ == "__main__":
+    fn = 'result.records'
+    if os.path.exists(fn):
+        df = pd.read_csv(fn)
+    else:
+        df = pd.DataFrame(columns=['K', 'M', 'p', 'r', 'EE', 'method'])
+    vary_M()
+    # t_zf()
