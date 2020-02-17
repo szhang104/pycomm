@@ -21,6 +21,9 @@ def hessian(f, argnums = 0):
     return jax.jacfwd(jax.jacrev(f, argnums), argnums)
 
 
+
+
+
 def test_gd_complex(alpha=0.1, max_iter=100):
     # sanity test to see if jax autograd gives the right descent direction
     # Never forget to conj() the returned grad if the complex function is real-valued

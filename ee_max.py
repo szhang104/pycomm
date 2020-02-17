@@ -4,6 +4,8 @@ import cvxpy as cp
 import dccp
 import pandas as pd
 import os
+from jax import jacrev
+import jax.numpy as jnp
 
 def t_posdef():
     # testing if the matrix B = A^T A, A = [  h_R  h_I ]
@@ -209,7 +211,8 @@ def maxee(H,
           P_user_max=1e-1,
           SINR_user_min=10 ** (8 / 10),  # 8dB
           max_iter=200,
-          eta=2 * 1e-2,
+          eta=0.01,
+          grad_ds=True,
           B=20 * 1e6,
           verbose=True,):
 
@@ -237,6 +240,7 @@ def maxee(H,
 
     K, M = H.shape[0], H.shape[1]
     EE = 0.0
+    EE_grad = jacrev(EE_d, 0)
     W = None
     P_req = P_user_max * np.ones(K)
     if dir_down == False:
@@ -248,21 +252,29 @@ def maxee(H,
         p_int = HHW2 - np.diag(p_sig)
         SINR_zf = p_sig / (p_int.sum(axis=1) + 1.0)
         SINR_req = SINR_zf
+        sl = 5*1e-6
+        W = wzf
     for it in range(max_iter):
-        status, n_W = min_power(H, P_req, SINR_req)
-        if status not in ["optimal", "optimal_inaccurate"]:
-            print("The sub-problem is {}".format(status))
-            if it == 0:
-                res['status'] = 'infeasible'
-            else:
-                res['status'] = 'success'
-            break
+        if grad_ds:
+            grad_ee = EE_grad(W, H, B)
+            n_W = W + sl * grad_ee.conj()
+            status = 'success'
+        else:
+            status, n_W = min_power(H, P_req, SINR_req)
+            if status not in ["optimal", "optimal_inaccurate"]:
+                print("The sub-problem is {}".format(status))
+                if it == 0:
+                    res['status'] = 'infeasible'
+                else:
+                    res['status'] = 'success'
+                break
         n_user_rate_v = user_rate(H, n_W, B)
         n_transmit_power_v = transmit_power(n_W)
-        n_total_rate, n_total_power = n_user_rate_v.sum(), get_total_power(
-            n_W).sum()
+        n_total_rate = n_user_rate_v.sum()
+        n_total_power = get_total_power(
+            n_W, n_total_rate).sum()
         n_EE = n_total_rate / n_total_power
-        if it > 0 and n_EE < EE:
+        if it > 0 and n_EE < EE and not dir_down:
             print("past the highest point")
             res['status'] = 'success'
             break
@@ -282,6 +294,7 @@ def maxee(H,
         else:
             j = np.argmax(abs(user_rate_v))
             SINR_req[j] -= 10
+
     res['W'] = W
     res['user_rate'] = user_rate_v
     res['transmit_power'] = transmit_power_v
@@ -303,23 +316,29 @@ def db2real_power(x):
 
 
 def user_rate(H, W, B):
-    HHW2 = np.abs(H.conj() @ W.T) ** 2.0
-    p_sig = np.diag(HHW2)
-    p_int = HHW2 - np.diag(p_sig)
+    HHW2 = jnp.abs(H.conj() @ W.T) ** 2.0
+    p_sig = jnp.diag(HHW2)
+    p_int = HHW2 - jnp.diag(p_sig)
     SINR = p_sig / (p_int.sum(axis=1) + 1.0)
-    rate = B * np.log2(1 + SINR)
+    rate = B * jnp.log2(1 + SINR)
     return rate
 
 
 def transmit_power(W):
-    return np.sum(np.abs(W) ** 2.0, axis=1)
+    return jnp.sum(jnp.abs(W) ** 2.0, axis=1)
 
 
-def get_total_power(W):
+def get_total_power(W, R=0.0):
     M = W.shape[-1]
-    P_fixed = 0.5
-    P_per_antenna = 0.02
-    return transmit_power(W).sum() + P_per_antenna * M + P_fixed
+    P_fixed = 1
+    P_per_antenna = 0.1
+    coeff1 = 1e-9
+    return transmit_power(W).sum() + P_per_antenna * M + P_fixed + coeff1 * R
+
+
+def EE_d(W, H, B):
+    R = user_rate(H, W, B).sum()
+    return R / get_total_power(W, R) / 1e6
 
 
 
@@ -402,9 +421,8 @@ def setup(K, M, no_cells=1, seed=12345, inst_count=1):
     return H
 
 
-def exp(K, M, seed=12345):
+def exp(K, M, P_user_max=0.1, seed=12345):
     print(K, M)
-    P_user_max = 0.1 # 20dBm
     # noise power set to -94dBm, as in the book
     # or use formula
     # P_noise = 1e-3 * 10 ** (0.1 * (-174 + 10 * np.log10(B)))
@@ -412,6 +430,8 @@ def exp(K, M, seed=12345):
     B = 20 * 1e6 # 20MHz bandwidth
     SINR_user_min = 10 ** (7 / 10)  # 7dB
     H = setup(K, M, seed=seed)
+
+
     snr = 10 * np.log10(
         np.power(np.abs(np.sqrt(P_user_max) * H), 2).mean(axis=-1) / P_noise)
     r = {}
@@ -420,8 +440,8 @@ def exp(K, M, seed=12345):
         H_ = H_ / np.sqrt(P_noise)
 
         W_zf = np.sqrt(P_user_max) * zf(H_)
-        p["zf"] = get_total_power(W_zf)
         r["zf"] = user_rate(H_, W_zf, B)
+        p["zf"] = get_total_power(W_zf, r["zf"].sum())
         print(r["zf"].sum() / p["zf"].sum() / 1e6)
 
         # W_new = maxee(
@@ -438,8 +458,18 @@ def exp(K, M, seed=12345):
 
 
         W_mr = np.sqrt(P_user_max) * mr(H_)
-        p["mr"] = get_total_power(W_mr)
         r["mr"] = user_rate(H_, W_mr, B)
+        p["mr"] = get_total_power(W_mr, r["mr"].sum())
+
+        res_ee_noant = maxee(H_,
+                             ant_sel=False,
+                             P_user_max=P_user_max,
+                             dir_down=True,
+                             SINR_user_min=SINR_user_min,
+                             B=B, verbose=True)
+        r["ee_noant"] = res_ee_noant['user_rate']
+        p["ee_noant"] = res_ee_noant['total_power']
+
 
         res_ee = maxee(H_,
                   ant_sel=True,
@@ -450,23 +480,25 @@ def exp(K, M, seed=12345):
         r["ee"] = res_ee['user_rate']
         p["ee"] = res_ee['total_power']
 
-        res_ee_noant = maxee(H_,
-                  ant_sel=False,
-                  P_user_max=P_user_max,
-                  SINR_user_min=SINR_user_min,
-                  B=B, verbose=False)
-        r["ee_noant"] = res_ee_noant['user_rate']
-        p["ee_noant"] = res_ee_noant['total_power']
 
 
 
+        res = pd.DataFrame()
         for x in ["ee", "ee_noant", "zf", "mr"]:
             print(x)
+            total_r = r[x].sum()
+            total_p = p[x].sum()
             print('{:8.3f} Mbit/s : {:8.3f} W @ {:8.3f} Mbit/J'.format(
-                r[x].sum() / 1e6,
+                total_r / 1e6,
                 p[x],
-                r[x].sum() / p[x].sum() / 1e6
+                total_r / total_p / 1e6
             ))
+            res = res.append({"r": total_r, "p": total_p, "method": x,
+                        "EE": total_r / total_p, "K": K, "M": M},
+                       ignore_index=True)
+        return res
+
+
 
 
 def t_zf():
@@ -491,17 +523,18 @@ def t_zf():
     return res
 
 
-def vary_M():
-    K = 20
-    for m in range(40, 160, 10):
-        exp(K, m)
 
 
 if __name__ == "__main__":
-    fn = 'result.records'
+    fn = 'result_1_0.1_p0.2.csv'
     if os.path.exists(fn):
-        df = pd.read_csv(fn)
+        df = pd.read_csv(fn, index_col=[0])
     else:
         df = pd.DataFrame(columns=['K', 'M', 'p', 'r', 'EE', 'method'])
-    vary_M()
-    # t_zf()
+
+    K = 8
+
+    for m in [80, 14, 15, 16] + list(range(20, 160, 10)):
+        res = exp(K, m, P_user_max=0.2)
+        df = df.append(res, ignore_index=True)
+        df.to_csv(fn)
