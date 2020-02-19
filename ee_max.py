@@ -198,7 +198,10 @@ def min_power(H, P_user_max, SINR_user_min):
         cp.Minimize(total_power),
         cons_power + cons_sinr + cons_force_real
     )
-    prob.solve()
+    try:
+        prob.solve()
+    except cp.error.SolverError:
+        return "Solver Error", None
     sol = None
     if prob.status in ["optimal", "optimal_inaccurate"]:
         sol = w_numpy(W)
@@ -210,9 +213,9 @@ def maxee(H,
           dir_down=False,
           P_user_max=1e-1,
           SINR_user_min=10 ** (8 / 10),  # 8dB
-          max_iter=200,
+          max_iter=350,
           eta=0.01,
-          grad_ds=True,
+          grad_ds=False,
           B=20 * 1e6,
           verbose=True,):
 
@@ -240,12 +243,13 @@ def maxee(H,
 
     K, M = H.shape[0], H.shape[1]
     EE = 0.0
-    EE_grad = jacrev(EE_d, 0)
+
     W = None
     P_req = P_user_max * np.ones(K)
     if dir_down == False:
         SINR_req = SINR_user_min * np.ones(K)
     else:
+        EE_grad = jacrev(EE_d, 0)
         wzf = np.sqrt(P_user_max) * complex_normalize(zf(H))
         HHW2 = np.abs(H.conj() @ wzf.T) ** 2.0
         p_sig = np.diag(HHW2)
@@ -464,9 +468,9 @@ def exp(K, M, P_user_max=0.1, seed=12345):
         res_ee_noant = maxee(H_,
                              ant_sel=False,
                              P_user_max=P_user_max,
-                             dir_down=True,
+                             dir_down=False,
                              SINR_user_min=SINR_user_min,
-                             B=B, verbose=True)
+                             B=B, verbose=False)
         r["ee_noant"] = res_ee_noant['user_rate']
         p["ee_noant"] = res_ee_noant['total_power']
 
@@ -523,18 +527,52 @@ def t_zf():
     return res
 
 
-
-
-if __name__ == "__main__":
-    fn = 'result_1_0.1_p0.2.csv'
+def fig_ee_per_user_power(K=10, M=100):
+    fn = 'result_peruser_power.csv'
     if os.path.exists(fn):
         df = pd.read_csv(fn, index_col=[0])
     else:
-        df = pd.DataFrame(columns=['K', 'M', 'p', 'r', 'EE', 'method'])
+        df = pd.DataFrame(columns=['K', 'M', 'p', 'r', 'EE', 'method',
+                                   'per_user_p'])
 
-    K = 8
-
-    for m in [80, 14, 15, 16] + list(range(20, 160, 10)):
-        res = exp(K, m, P_user_max=0.2)
+    for p in [0.02, 0.04, 0.06, 0.08, 0.1]:
+        res = exp(K, M, P_user_max=p)
         df = df.append(res, ignore_index=True)
         df.to_csv(fn)
+
+
+def fig_ee_instant(K=10, M=100, N=20):
+    fn = 'result_instant.csv'
+    if os.path.exists(fn):
+        df = pd.read_csv(fn, index_col=[0])
+    else:
+        df = pd.DataFrame(columns=['K', 'M', 'p', 'r', 'EE', 'method',
+                               'per_user_p'])
+    P_user_max=0.1
+    for i in range(N):
+        res = exp(K, M, P_user_max, seed=i)
+        df = df.append(res, ignore_index=True)
+        df.to_csv(fn)
+
+
+def fig_ee_users(M=100):
+    fn = 'result_K_M_{}.csv'.format(M)
+    if os.path.exists(fn):
+        df = pd.read_csv(fn, index_col=[0])
+    else:
+        df = pd.DataFrame(columns=['K', 'M', 'p', 'r', 'EE', 'method',
+                                   'per_user_p'])
+    p = 0.1
+    for k in [5, 10, 15, 20, 25]:
+        res = exp(k, M, P_user_max=p)
+        df = df.append(res, ignore_index=True)
+        df.to_csv(fn)
+
+if __name__ == "__main__":
+    # K: 5, 10, 15, 20, 25
+    # M: 50, 80, 100, 120, 140, 160, 180
+    fig_ee_users(M=160)
+    fig_ee_users(M=140)
+    fig_ee_users(M=120)
+    fig_ee_users(M=80)
+    fig_ee_users(M=50)
